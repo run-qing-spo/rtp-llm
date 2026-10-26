@@ -724,7 +724,8 @@ bool KVCacheManager::executeFunction(const FunctionRequestPB& request, FunctionR
     }
     const auto timeout =
         timeout_ms > 0 ? std::chrono::milliseconds(timeout_ms) : BlockTreeTaskPool::kDefaultQueueWaitTimeout;
-    const auto status = block_tree_cache_->executeTransfer(TransferTask(descriptors, timeout));
+    const auto status = block_tree_cache_->executeTransfer(
+        TransferTask(descriptors, timeout, request.mem_request().task_id()));
     BlockTransferRequestConverter::encodeTransferResult(*memory_response, status);
     if (!status.ok()) {
         RTP_LLM_LOG_WARNING("KVCacheManager::executeFunction: grouped transfer failed");

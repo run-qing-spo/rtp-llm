@@ -3,7 +3,7 @@ load("//bazel:arch_select.bzl", "no_block_copy_link_deps", "torch_deps")
 
 cc_library(
     name = "transfer_task_registry",
-    hdrs = ["transfer/TransferTaskRegistry.h"],
+    hdrs = ["transfer/TransferTaskRegistry.h", "transfer/TransferTaskId.h"],
     visibility = ["//visibility:public"],
 )
 
@@ -148,6 +148,7 @@ cc_library(
         "transfer/HostDiskTransferExecutor.h",
         "transfer/DeviceDiskTransferExecutor.h",
         "transfer/TransferTypes.h",
+        "transfer/TransferTaskId.h",
         "block_pool/DiskBlockIO.h",
         "block_pool/DiskBlockPool.h",
         "block_pool/DiskMountGuard.h",

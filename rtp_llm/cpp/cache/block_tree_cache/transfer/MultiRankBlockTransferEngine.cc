@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "rtp_llm/cpp/cache/block_tree_cache/transfer/BlockTransferRequestConverter.h"
+#include "rtp_llm/cpp/cache/block_tree_cache/transfer/TransferTaskId.h"
 #include "rtp_llm/cpp/config/StaticConfig.h"
 #include "rtp_llm/cpp/model_rpc/BroadcastManager.h"
 #include "rtp_llm/cpp/utils/AssertUtils.h"
@@ -175,6 +176,7 @@ std::shared_ptr<TransferAsyncContext> MultiRankBlockTransferEngine::execute(Tran
             ErrorInfo(ErrorCode::INVALID_PARAMS, "failed to encode transfer batch"), block_count);
     }
     const size_t      worker_count = broadcast_manager_->workerNum();
+    request.set_task_id(nextTransferTaskId());
     FunctionRequestPB function_request;
     function_request.mutable_mem_request()->CopyFrom(request);
     std::vector<FunctionRequestPB> requests(worker_count, function_request);

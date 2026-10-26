@@ -732,6 +732,7 @@ message MemoryOperationRequestPB {
     repeated CopyItem copy_items = 1;
     CopyDirection copy_direction = 2;
     int64 timeout_ms = 3;
+    string task_id = 4;  // One execution ID shared by every rank in this submission.
 }
 
 message MemoryOperationResponsePB {

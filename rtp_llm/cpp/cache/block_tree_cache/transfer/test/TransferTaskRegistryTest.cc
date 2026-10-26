@@ -1,7 +1,17 @@
 #include "rtp_llm/cpp/cache/block_tree_cache/transfer/TransferTaskRegistry.h"
 #include <gtest/gtest.h>
+#include <set>
+#include "rtp_llm/cpp/cache/block_tree_cache/transfer/TransferTaskId.h"
 
 namespace rtp_llm {
+TEST(TransferTaskRegistryTest, ExecutionIdsAreDistinct) {
+    std::set<std::string> ids;
+    for (int i = 0; i < 1000; ++i) {
+        auto id = nextTransferTaskId();
+        EXPECT_FALSE(id.empty());
+        EXPECT_TRUE(ids.insert(id).second);
+    }
+}
 TEST(TransferTaskRegistryTest, TracksCompletionWithoutRestartingTask) {
     TransferTaskRegistry registry;
     using State = TransferTaskRegistry::State;

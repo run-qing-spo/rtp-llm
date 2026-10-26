@@ -638,6 +638,8 @@ TEST_F(MultiRankBlockTransferEngineTest, BroadcastHostLoadCommitsDeviceResource)
 
     std::lock_guard<std::mutex> lock(state->mutex);
     ASSERT_EQ(state->requests.size(), 2u);
+    EXPECT_FALSE(state->requests.front().task_id().empty());
+    EXPECT_EQ(state->requests[0].task_id(), state->requests[1].task_id());
     for (const MemoryOperationRequestPB& worker_request : state->requests) {
         ASSERT_EQ(worker_request.copy_items_size(), 1);
         EXPECT_EQ(worker_request.copy_direction(), MemoryOperationRequestPB::H2D);
