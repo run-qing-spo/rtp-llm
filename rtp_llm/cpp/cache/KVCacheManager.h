@@ -132,6 +132,7 @@ public:
     // Returns whether a trustworthy mem_response was formed, not whether the transfer
     // succeeded; the transfer outcome is reported through mem_response.code.
     bool executeFunction(const FunctionRequestPB& request, FunctionResponsePB& response);
+    bool queryTransferTasks(const QueryTransferTasksRequestPB& request, QueryTransferTasksResponsePB& response) const;
 
     BlockTreeCachePtr blockTreeCache() const {
         return block_tree_cache_;

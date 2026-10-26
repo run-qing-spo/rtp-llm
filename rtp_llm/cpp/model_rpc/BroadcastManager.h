@@ -272,6 +272,15 @@ public:
         return result;
     }
 
+    std::shared_ptr<BroadcastResult<QueryTransferTasksRequestPB, QueryTransferTasksResponsePB>>
+    queryTransferTasks(const std::vector<QueryTransferTasksRequestPB>& requests, int timeout_ms = 200) const {
+        if (timeout_ms <= 0) return nullptr;
+        return broadcast<QueryTransferTasksRequestPB, QueryTransferTasksResponsePB>(
+            requests, timeout_ms, [](const auto& stub, const auto& context, const auto& request, auto* cq) {
+                return stub->AsyncQueryTransferTasks(context.get(), request, cq);
+            });
+    }
+
     size_t workerNum() const {
         return worker_addrs_.size();
     }

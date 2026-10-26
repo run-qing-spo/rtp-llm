@@ -4,6 +4,18 @@
 #include "rtp_llm/cpp/cache/block_tree_cache/transfer/TransferTaskId.h"
 
 namespace rtp_llm {
+TEST(TransferTaskRegistryTest, MixedQueriesPreserveMissingRecords) {
+    TransferTaskRegistry registry;
+    using State = TransferTaskRegistry::State;
+    ASSERT_TRUE(registry.start("running"));
+    ASSERT_TRUE(registry.start("finished"));
+    ASSERT_TRUE(registry.finish("finished"));
+    const State expected[] = {State::RUNNING, State::FINISHED, State::NOT_FOUND};
+    size_t i = 0;
+    for (const auto* id : {"running", "finished", "missing"}) EXPECT_EQ(registry.query(id), expected[i++]);
+    EXPECT_EQ(registry.query("missing"), State::NOT_FOUND);
+}
+
 TEST(TransferTaskRegistryTest, ExecutionIdsAreDistinct) {
     std::set<std::string> ids;
     for (int i = 0; i < 1000; ++i) {

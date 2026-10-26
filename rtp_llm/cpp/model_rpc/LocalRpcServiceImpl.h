@@ -168,6 +168,11 @@ public:
         }
     }
 
+    ::grpc::Status QueryTransferTasks(::grpc::ServerContext* context, const QueryTransferTasksRequestPB* request,
+                                      QueryTransferTasksResponsePB* response) override {
+        return local_server_->QueryTransferTasks(context, request, response);
+    }
+
     ::grpc::Status ExecuteFunction(::grpc::ServerContext*     context,
                                    const ::FunctionRequestPB* request,
                                    ::FunctionResponsePB*      response) override {
