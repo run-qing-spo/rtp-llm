@@ -6,6 +6,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <functional>
+#include <future>
 #include <mutex>
 #include <stdexcept>
 #include <thread>
@@ -19,6 +20,7 @@
 #include "rtp_llm/cpp/cache/block_tree_cache/group_set/LinearGroupSet.h"
 #include "rtp_llm/cpp/cache/block_tree_cache/group_set/SWAGroupSet.h"
 #include "rtp_llm/cpp/cache/block_tree_cache/transfer/BlockTransferDispatcher.h"
+#include "rtp_llm/cpp/cache/block_tree_cache/transfer/TransferBatchAsyncContext.h"
 #include "rtp_llm/cpp/cache/FullCacheManager.h"
 #include "rtp_llm/cpp/cache/block_tree_cache/test/BlockTreeCacheTestUtils.h"
 #include "rtp_llm/cpp/cache/MHAKVCacheSpec.h"
@@ -237,6 +239,41 @@ protected:
 
     std::unique_ptr<BlockTreeCache> cache_;
 };
+
+TEST_F(BlockTreeCacheTest, RecordsOnlyConfirmedTransferCompletion) {
+    class Engine final: public PerRankBlockTransferEngine {
+    public:
+        Engine(): PerRankBlockTransferEngine({}) {}
+        std::shared_ptr<TransferAsyncContext> execute(TransferTask) override {
+            entered.set_value();
+            return context;
+        }
+        std::promise<void> entered;
+        std::shared_ptr<TransferBatchAsyncContext> context = std::make_shared<TransferBatchAsyncContext>(0);
+    };
+    using State = TransferTaskRegistry::State;
+    const std::vector<ErrorCode> codes = {ErrorCode::NONE_ERROR, ErrorCode::INVALID_PARAMS,
+        ErrorCode::DEADLINE_EXCEEDED, ErrorCode::EXECUTION_EXCEPTION, ErrorCode::TRANSFER_COMPLETION_UNKNOWN};
+    for (size_t i = 0; i < codes.size(); ++i) {
+        auto engine = std::make_shared<Engine>();
+        BlockTreeCacheTestPeer::setPerRankBlockTransferEngineForTest(*cache_, engine);
+        const auto id = std::to_string(i);
+        auto entered = engine->entered.get_future();
+        auto execution = std::async(std::launch::async, [&] {
+            return cache_->executeTransfer(TransferTask({}, std::chrono::seconds(30), id));
+        });
+        const auto ready = entered.wait_for(std::chrono::seconds(5));
+        EXPECT_EQ(cache_->queryTransferTask(id), State::RUNNING);
+        engine->context->complete(i == 0 ? ErrorInfo::OkStatus() : ErrorInfo(codes[i], "test"));
+        execution.get();
+        ASSERT_EQ(ready, std::future_status::ready);
+        const auto expected = i < 3 ? State::FINISHED : State::RUNNING;
+        EXPECT_EQ(cache_->queryTransferTask(id), expected);
+        EXPECT_EQ(cache_->executeTransfer(TransferTask({}, std::chrono::seconds(30), id)).status.code(),
+                  ErrorCode::TRANSFER_COMPLETION_UNKNOWN);
+        EXPECT_EQ(cache_->queryTransferTask(id), expected);
+    }
+}
 
 TEST_F(BlockTreeCacheTest, IncompleteResidentInsertKeepsPrefixProtectedAndRetrySucceeds) {
     std::vector<std::vector<GroupSetResource>> resources(2, std::vector<GroupSetResource>(1));

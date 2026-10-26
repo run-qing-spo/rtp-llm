@@ -133,9 +133,18 @@ void BlockTreeCache::shutdownLoads() {
 }
 
 TransferResult BlockTreeCache::executeTransfer(TransferTask task) {
+    const auto task_id = task.taskId();
+    if (!task_id.empty() && !transfer_task_registry_.start(task_id)) {
+        return ErrorInfo(ErrorCode::TRANSFER_COMPLETION_UNKNOWN, "duplicate transfer task id");
+    }
     auto context = transfer_dispatcher_->executePerRank(std::move(task));
     context->waitDone();
     auto result = context->result();
+    // Context readiness alone does not prove quiescence after a device/unknown exception.
+    const auto code = result.status.code();
+    if (result.ok() || code == ErrorCode::INVALID_PARAMS || code == ErrorCode::DEADLINE_EXCEEDED) {
+        transfer_task_registry_.finish(task_id);
+    }
     if (!result.ok()) {
         RTP_LLM_LOG_WARNING("per-rank block transfer failed: %s", result.status.ToString().c_str());
     }
