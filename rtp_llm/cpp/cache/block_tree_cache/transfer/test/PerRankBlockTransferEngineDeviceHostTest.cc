@@ -1948,6 +1948,26 @@ protected:
     GroupSetPtr                    group_set_;
 };
 
+TEST_F(PerRankBlockTransferEngineStrategyTest, UnknownCompletionDoesNotFallBack) {
+    class UnknownStrategy final: public DeviceHostCopyStrategy {
+    public:
+        StrategyResult tryExecute(const DeviceHostCopyPlan&, const DeviceHostCopyOptions&,
+                                  const DeviceHostCopyExecutionContext&) override {
+            throw CopyCompletionUnknown("injected synchronization failure");
+        }
+    };
+    auto engine = makePerRankBlockTransferEngine();
+    auto& strategies = engine->device_host_executor_->strategies_;
+    strategies.insert(strategies.begin(), std::make_unique<UnknownStrategy>());
+    const auto host_block = poolMalloc(*host_pool_);
+    auto context = engine->execute(TransferTask(
+        {makeDescriptor(Tier::DEVICE, Tier::HOST, device_blocks_, host_block)}, std::chrono::seconds(30)));
+    context->waitDone();
+    EXPECT_EQ(context->result().status.code(), ErrorCode::TRANSFER_COMPLETION_UNKNOWN);
+    // The injected failure submitted no I/O, so this test can release its allocation.
+    releasePoolBlock(*host_pool_, host_block);
+}
+
 TEST_F(PerRankBlockTransferEngineStrategyTest, GenericStrategyRoundTrip) {
     DeviceHostCopyOptions options;
     options.cuda_batch_copy_enabled                          = false;

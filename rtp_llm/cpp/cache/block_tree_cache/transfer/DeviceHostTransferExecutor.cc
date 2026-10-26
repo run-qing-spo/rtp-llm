@@ -118,7 +118,12 @@ TransferResult DeviceHostTransferExecutor::executeBatch(const std::vector<HostBu
         const auto& context = contexts[plan_index];
         bool        handled = false;
         for (auto& strategy : strategies_) {
-            auto result = strategy->tryExecute(plan, options_, context);
+            StrategyResult result;
+            try {
+                result = strategy->tryExecute(plan, options_, context);
+            } catch (const CopyCompletionUnknown& error) {
+                return ErrorInfo(ErrorCode::TRANSFER_COMPLETION_UNKNOWN, error.what());
+            }
             if (result.status == StrategyStatus::DONE) {
                 handled = true;
                 break;

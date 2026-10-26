@@ -3,10 +3,17 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <stdexcept>
 #include <torch/torch.h>
 #include <vector>
 
 namespace rtp_llm {
+
+// Raised only when submitted CUDA work could still access caller buffers.
+class CopyCompletionUnknown: public std::runtime_error {
+public:
+    using std::runtime_error::runtime_error;
+};
 
 enum class DeviceHostCopyDirection {
     H2D,

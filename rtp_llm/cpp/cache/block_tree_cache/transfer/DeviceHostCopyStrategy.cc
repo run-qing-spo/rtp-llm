@@ -51,6 +51,8 @@ StrategyResult GenericMultiCopyDeviceHostCopyStrategy::tryExecute(const DeviceHo
     MultiCopyParams mc{dst_buffers, src_buffers};
     try {
         execNoBlockCopy(mc, context);
+    } catch (const CopyCompletionUnknown&) {
+        throw;
     } catch (const std::exception& error) {
         RTP_LLM_LOG_WARNING("generic copy failed group_set=%zu device=%d direction=%s stream=%p: %s",
                             plan.group_set_id,
