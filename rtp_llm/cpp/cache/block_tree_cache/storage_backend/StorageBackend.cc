@@ -39,12 +39,15 @@ struct StorageTaskState {
     StorageRequest   request;
     std::vector<Pin> pins;
     std::once_flag   finish_once;
+    std::function<void(FrozenTask)> retain_frozen;
     void             finish(bool completion_unknown) noexcept {
         std::call_once(finish_once, [this, completion_unknown] {
             if (completion_unknown) {
+                FrozenTask frozen(TransferResult{ErrorInfo(ErrorCode::TRANSFER_COMPLETION_UNKNOWN, "backend completion unknown")});
                 for (const Pin& pin : pins) {
-                    pin.pool->freezeBlock(pin.block);
+                    frozen.freeze(pin.pool, pin.block);
                 }
+                retain_frozen(std::move(frozen));
             }
             for (const Pin& pin : pins) {
                 pin.pool->decRef(pin.block);
@@ -240,6 +243,10 @@ std::shared_ptr<storage_backend_detail::StorageTaskState> StorageBackend::prepar
     validateRequest(request, /*allow_null_blocks=*/false);
     auto state     = std::make_shared<storage_backend_detail::StorageTaskState>();
     state->request = std::move(request);
+    state->retain_frozen = [this](FrozenTask task) {
+        std::lock_guard<std::mutex> lock(frozen_mutex_);
+        frozen_tasks_.push_back(std::move(task));
+    };
     RTP_LLM_CHECK(initialized_);
 
     std::unordered_set<BlockKey, BlockKeyHash> pinned;

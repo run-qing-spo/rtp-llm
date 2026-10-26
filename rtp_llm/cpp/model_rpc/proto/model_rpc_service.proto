@@ -712,6 +712,26 @@ service EmbeddingRpcService {
     rpc health(EmbeddingHealthRequestPB) returns (EmptyPB);
 }
 
+// Read-only query of worker-local memory transfer execution records.
+message QueryTransferTasksRequestPB {
+    repeated string task_ids = 1;
+}
+
+message QueryTransferTasksResponsePB {
+    message TaskState {
+        enum State {
+            NOT_FOUND = 0;  // No completion evidence; never treat as finished.
+            RUNNING = 1;    // Completion has not been confirmed.
+            FINISHED = 2;   // No further block access, whether successful or failed.
+        }
+        string task_id = 1;
+        State state = 2;
+    }
+    // One entry per requested ID, including duplicates and missing IDs.
+    // Clients match by ID; a missing response entry is not completion evidence.
+    repeated TaskState tasks = 1;
+}
+
 message MemoryOperationRequestPB {
     message CopyItem {
         int32 mem_block = 1;
@@ -732,6 +752,7 @@ message MemoryOperationRequestPB {
     repeated CopyItem copy_items = 1;
     CopyDirection copy_direction = 2;
     int64 timeout_ms = 3;
+    string task_id = 4;  // One execution ID shared by every rank in this submission.
 }
 
 message MemoryOperationResponsePB {
@@ -992,6 +1013,7 @@ service RpcService {
     rpc RemoteStore(RemoteStoreRequestPB) returns (RemoteStoreResponsePB);
 
     rpc ExecuteFunction(FunctionRequestPB) returns (FunctionResponsePB);
+    rpc QueryTransferTasks(QueryTransferTasksRequestPB) returns (QueryTransferTasksResponsePB);
     rpc StartLoad(P2PConnectorStartLoadRequestPB) returns (P2PConnectorStartLoadResponsePB);
     rpc GetPeerInfo(GetPeerInfoRequestPB) returns (GetPeerInfoResponsePB);
     rpc EnqueueBatch(EnqueueBatchRequestPB) returns (EnqueueBatchResponsePB);

@@ -104,6 +104,7 @@ bool BlockTreeCache::init() {
 }
 
 BlockTreeCache::~BlockTreeCache() {
+    if (transfer_dispatcher_) transfer_dispatcher_->stopFrozenPolling();
     full_prefix_scanner_.reset();
     RTP_LLM_LOG_INFO("destroying, closing load tickets...");
     shutdownLoads();
@@ -133,9 +134,18 @@ void BlockTreeCache::shutdownLoads() {
 }
 
 TransferResult BlockTreeCache::executeTransfer(TransferTask task) {
+    const auto task_id = task.taskId();
+    if (!task_id.empty() && !transfer_task_registry_.start(task_id)) {
+        return ErrorInfo(ErrorCode::INVALID_PARAMS, "duplicate transfer task id");
+    }
     auto context = transfer_dispatcher_->executePerRank(std::move(task));
     context->waitDone();
     auto result = context->result();
+    // Conservatively permit recovery only after a successful worker transfer.
+    // Failed transfers remain RUNNING, even when some failure paths are quiescent.
+    if (result.ok()) {
+        transfer_task_registry_.finish(task_id);
+    }
     if (!result.ok()) {
         RTP_LLM_LOG_WARNING("per-rank block transfer failed: %s", result.status.ToString().c_str());
     }

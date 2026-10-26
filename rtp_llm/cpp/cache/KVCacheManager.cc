@@ -671,6 +671,24 @@ KVCacheManager::incrKVCacheRef(const KVCacheResource& resource, const CacheKeysT
     return coordinator_manager_->incrKVCacheRef(resource, cache_keys, is_connector);
 }
 
+bool KVCacheManager::queryTransferTasks(const QueryTransferTasksRequestPB& request,
+                                       QueryTransferTasksResponsePB& response) const {
+    response.clear_tasks();
+    if (!block_tree_cache_) return false;
+    using State = TransferTaskRegistry::State;
+    using PB = QueryTransferTasksResponsePB::TaskState;
+    for (const auto& id : request.task_ids()) {
+        auto* entry = response.add_tasks();
+        entry->set_task_id(id);
+        switch (block_tree_cache_->queryTransferTask(id)) {
+            case State::NOT_FOUND: entry->set_state(PB::NOT_FOUND); break;
+            case State::RUNNING: entry->set_state(PB::RUNNING); break;
+            case State::FINISHED: entry->set_state(PB::FINISHED); break;
+        }
+    }
+    return true;
+}
+
 bool KVCacheManager::executeFunction(const FunctionRequestPB& request, FunctionResponsePB& response) {
     if (request.has_remote_request()) {
 #ifdef RTP_LLM_USE_REMOTE_KV_CACHE
@@ -724,7 +742,8 @@ bool KVCacheManager::executeFunction(const FunctionRequestPB& request, FunctionR
     }
     const auto timeout =
         timeout_ms > 0 ? std::chrono::milliseconds(timeout_ms) : BlockTreeTaskPool::kDefaultQueueWaitTimeout;
-    const auto status = block_tree_cache_->executeTransfer(TransferTask(descriptors, timeout));
+    const auto status = block_tree_cache_->executeTransfer(
+        TransferTask(descriptors, timeout, request.mem_request().task_id()));
     BlockTransferRequestConverter::encodeTransferResult(*memory_response, status);
     if (!status.ok()) {
         RTP_LLM_LOG_WARNING("KVCacheManager::executeFunction: grouped transfer failed");

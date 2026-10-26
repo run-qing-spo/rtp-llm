@@ -132,6 +132,25 @@ void IBlockPool::freezeBlock(BlockIdxType block) noexcept {
     incTreeRefNoLock(block, treeRefTypeIndex(BlockTreeRefType::FROZEN));
 }
 
+void IBlockPool::unfreezeBlock(BlockIdxType block) {
+    const auto index = treeRefTypeIndex(BlockTreeRefType::FROZEN);
+    mutateAllocatedBlocks(
+        BlockIdList{block},
+        [this, index](BlockIdxType block) { RTP_LLM_CHECK(tree_refcounts_by_type_[index][block] == 1); },
+        [this, index](BlockIdxType block) {
+            const bool was_active = isActiveNoLock(block);
+            const bool was_available = isAvailableNoLock(block);
+            tree_refcounts_by_type_[index][block] = 0;
+            --tree_referenced_block_counts_[index];
+            --tree_refcounts_[block];
+            if (tree_refcounts_[block] == 0 && onLastTreeRefNoLock(block)) {
+                freeAllocatedBlockNoLock(block);
+            }
+            updateActiveBlocksNumNoLock(block, was_active);
+            updateAvailableBlocksNumNoLock(block, was_available);
+        });
+}
+
 bool IBlockPool::isFrozen(BlockIdxType block) const {
     std::lock_guard<std::mutex> lock(mutex_);
     checkInitializedNoLock();

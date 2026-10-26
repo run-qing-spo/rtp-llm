@@ -107,6 +107,8 @@ public:
     void reportWorkerStatusTime(int64_t request_begin_time_us, int64_t request_after_lb_time_us);
 
     void reportCacheStatusTime(int64_t request_begin_time_us);
+    ::grpc::Status QueryTransferTasks(::grpc::ServerContext* context, const QueryTransferTasksRequestPB* request,
+                                      QueryTransferTasksResponsePB* response);
 
     ::grpc::Status
     ExecuteFunction(::grpc::ServerContext* context, const ::FunctionRequestPB* request, ::FunctionResponsePB* response);

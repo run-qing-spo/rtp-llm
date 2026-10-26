@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "rtp_llm/cpp/cache/block_tree_cache/transfer/BlockTransferRequestConverter.h"
+#include "rtp_llm/cpp/cache/block_tree_cache/transfer/TransferTaskId.h"
 #include "rtp_llm/cpp/config/StaticConfig.h"
 #include "rtp_llm/cpp/model_rpc/BroadcastManager.h"
 #include "rtp_llm/cpp/utils/AssertUtils.h"
@@ -24,9 +25,10 @@ class MultiRankTransferAsyncContext final:
     public std::enable_shared_from_this<MultiRankTransferAsyncContext> {
 public:
     static std::shared_ptr<MultiRankTransferAsyncContext>
-    create(std::shared_ptr<TransferBroadcastResult> result, size_t worker_count, size_t block_count) {
+    create(std::shared_ptr<TransferBroadcastResult> result, size_t worker_count, size_t block_count, std::string task_id) {
         auto context = std::shared_ptr<MultiRankTransferAsyncContext>(
             new MultiRankTransferAsyncContext(std::move(result), worker_count, block_count));
+        context->task_id_ = std::move(task_id);
         context->start();
         return context;
     }
@@ -95,6 +97,7 @@ private:
                 RTP_LLM_FAIL("multi-rank transfer aborted, at least one worker RPC status is not OK");
             }
             result = {std::move(error), CacheCopyError::RPC_FAILED};
+            if (broadcast_result_->onlyTimeoutFailures()) result.recovery_task_ids = {task_id_};
         }
 
         const auto responses = broadcast_result_->responses();
@@ -141,6 +144,7 @@ private:
     }
 
     std::shared_ptr<TransferBroadcastResult> broadcast_result_;
+    std::string                              task_id_;
     size_t                                   worker_count_{0};
     size_t                                   block_count_{0};
     mutable std::mutex                       mutex_;
@@ -155,6 +159,22 @@ private:
 MultiRankBlockTransferEngine::MultiRankBlockTransferEngine(std::vector<GroupSetPtr>          group_sets,
                                                            std::shared_ptr<BroadcastManager> broadcast_manager):
     group_sets_(std::move(group_sets)), broadcast_manager_(std::move(broadcast_manager)) {}
+
+std::vector<TaskCompletion> MultiRankBlockTransferEngine::queryTasks(
+    const std::vector<std::string>& ids, int timeout_ms) const {
+    std::vector<TaskCompletion> states(ids.size(), TaskCompletion::UNKNOWN);
+    if (ids.empty() || !broadcast_manager_ || broadcast_manager_->workerNum() == 0) return states;
+    QueryTransferTasksRequestPB request;
+    for (const auto& id : ids) request.add_task_ids(id);
+    const auto count = broadcast_manager_->workerNum();
+    auto result = broadcast_manager_->queryTransferTasks(
+        std::vector<QueryTransferTasksRequestPB>(count, request), timeout_ms);
+    if (!result || !result->waitForCompletion().ok()) return states;
+    const auto responses = result->responses();
+    for (size_t i = 0; i < ids.size(); ++i)
+        states[i] = BlockTransferRequestConverter::queryCompletion(ids[i], responses, count);
+    return states;
+}
 
 std::shared_ptr<TransferAsyncContext> MultiRankBlockTransferEngine::execute(TransferTask task) const {
     const size_t block_count       = task.descriptors().size();
@@ -175,6 +195,7 @@ std::shared_ptr<TransferAsyncContext> MultiRankBlockTransferEngine::execute(Tran
             ErrorInfo(ErrorCode::INVALID_PARAMS, "failed to encode transfer batch"), block_count);
     }
     const size_t      worker_count = broadcast_manager_->workerNum();
+    request.set_task_id(nextTransferTaskId());
     FunctionRequestPB function_request;
     function_request.mutable_mem_request()->CopyFrom(request);
     std::vector<FunctionRequestPB> requests(worker_count, function_request);
@@ -202,7 +223,7 @@ std::shared_ptr<TransferAsyncContext> MultiRankBlockTransferEngine::execute(Tran
                            CacheCopyError::RPC_FAILED),
             block_count);
     }
-    return MultiRankTransferAsyncContext::create(std::move(broadcast_result), worker_count, block_count);
+    return MultiRankTransferAsyncContext::create(std::move(broadcast_result), worker_count, block_count, request.task_id());
 }
 
 }  // namespace rtp_llm

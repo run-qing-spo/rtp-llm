@@ -16,6 +16,7 @@
 #include "rtp_llm/cpp/cache/block_tree_cache/block_pool/DeviceBlockPool.h"
 #include "rtp_llm/cpp/cache/block_tree_cache/storage_backend/StorageBackendExecutor.h"
 #include "rtp_llm/cpp/utils/ErrorCode.h"
+#include "rtp_llm/cpp/cache/block_tree_cache/transfer/FrozenTask.h"
 
 namespace rtp_llm {
 
@@ -144,6 +145,9 @@ private:
     std::condition_variable lifecycle_cv_;
     Lifecycle               lifecycle_{Lifecycle::CREATED};
     size_t                  in_flight_{0};
+
+    std::mutex frozen_mutex_;
+    std::vector<FrozenTask> frozen_tasks_;
 
     friend class LoadAsyncContext;
 };
