@@ -17,6 +17,7 @@ public:
                                  std::shared_ptr<BroadcastManager> broadcast_manager);
 
     std::shared_ptr<TransferAsyncContext> execute(TransferTask task) const;
+    std::vector<TaskCompletion> queryTasks(const std::vector<std::string>& ids, int timeout_ms = 200) const;
 
 private:
     friend class BlockTransferDispatcher;

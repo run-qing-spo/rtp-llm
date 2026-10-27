@@ -157,6 +157,22 @@ MultiRankBlockTransferEngine::MultiRankBlockTransferEngine(std::vector<GroupSetP
                                                            std::shared_ptr<BroadcastManager> broadcast_manager):
     group_sets_(std::move(group_sets)), broadcast_manager_(std::move(broadcast_manager)) {}
 
+std::vector<TaskCompletion> MultiRankBlockTransferEngine::queryTasks(
+    const std::vector<std::string>& ids, int timeout_ms) const {
+    std::vector<TaskCompletion> states(ids.size(), TaskCompletion::UNKNOWN);
+    if (ids.empty() || !broadcast_manager_ || broadcast_manager_->workerNum() == 0) return states;
+    QueryTransferTasksRequestPB request;
+    for (const auto& id : ids) request.add_task_ids(id);
+    const auto count = broadcast_manager_->workerNum();
+    auto result = broadcast_manager_->queryTransferTasks(
+        std::vector<QueryTransferTasksRequestPB>(count, request), timeout_ms);
+    if (!result || !result->waitForCompletion().ok()) return states;
+    const auto responses = result->responses();
+    for (size_t i = 0; i < ids.size(); ++i)
+        states[i] = BlockTransferRequestConverter::queryCompletion(ids[i], responses, count);
+    return states;
+}
+
 std::shared_ptr<TransferAsyncContext> MultiRankBlockTransferEngine::execute(TransferTask task) const {
     const size_t block_count       = task.descriptors().size();
     const auto   deadline_exceeded = [block_count]() {

@@ -17,6 +17,8 @@ namespace rtp_llm {
 
 struct TreeNode;
 
+enum class TaskCompletion { UNKNOWN, PENDING, FINISHED };
+
 enum class TransferStatus {
     OK,
     INVALID_ARGS,
