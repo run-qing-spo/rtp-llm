@@ -1,6 +1,7 @@
 #include "rtp_llm/cpp/cache/block_tree_cache/transfer/BlockTransferDispatcher.h"
 
 #include <algorithm>
+#include <chrono>
 #include <exception>
 #include <memory>
 #include <string>
@@ -23,10 +24,36 @@ BlockTransferDispatcher::BlockTransferDispatcher(std::shared_ptr<PerRankBlockTra
     multi_rank_engine_(std::move(multi_rank_engine)),
     max_descriptors_per_batch_(max_descriptors_per_batch) {
     RTP_LLM_CHECK(max_descriptors_per_batch_ > 0);
+    if (multi_rank_engine_) {
+        frozen_thread_ = std::thread([this] {
+            std::unique_lock<std::mutex> lock(frozen_stop_mutex_);
+            while (!frozen_stop_cv_.wait_for(lock, std::chrono::seconds(1), [this] { return frozen_stopping_; })) {
+                lock.unlock();
+                try {
+                    pollFrozenTasks();
+                } catch (const std::exception& error) {
+                    RTP_LLM_LOG_WARNING("frozen task polling failed: %s", error.what());
+                } catch (...) {
+                    RTP_LLM_LOG_WARNING("frozen task polling failed with unknown exception");
+                }
+                lock.lock();
+            }
+        });
+    }
 }
 
 BlockTransferDispatcher::~BlockTransferDispatcher() {
+    stopFrozenPolling();
     drainTransfers();
+}
+
+void BlockTransferDispatcher::stopFrozenPolling() {
+    {
+        std::lock_guard<std::mutex> lock(frozen_stop_mutex_);
+        frozen_stopping_ = true;
+    }
+    frozen_stop_cv_.notify_all();
+    if (frozen_thread_.joinable()) frozen_thread_.join();
 }
 
 void BlockTransferDispatcher::pollFrozenTasks() const {

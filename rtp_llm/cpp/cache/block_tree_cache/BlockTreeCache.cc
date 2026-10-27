@@ -104,6 +104,7 @@ bool BlockTreeCache::init() {
 }
 
 BlockTreeCache::~BlockTreeCache() {
+    if (transfer_dispatcher_) transfer_dispatcher_->stopFrozenPolling();
     full_prefix_scanner_.reset();
     RTP_LLM_LOG_INFO("destroying, closing load tickets...");
     shutdownLoads();

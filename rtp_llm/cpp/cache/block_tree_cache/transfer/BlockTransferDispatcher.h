@@ -1,6 +1,8 @@
 #pragma once
 
 #include <cstddef>
+#include <condition_variable>
+#include <thread>
 #include <functional>
 #include <future>
 #include <memory>
@@ -38,6 +40,8 @@ public:
     // Call after producers stop; callbacks can still submit a subsequent stage.
     void drainTransfers() const;
     void pollFrozenTasks() const;
+    // Lifecycle owner calls this without holding cache/pool locks; waits for in-flight polling.
+    void stopFrozenPolling();
     // IDs must come from FINISHED results confirmed across every worker.
     void releaseCompletedFrozenTasks(const std::unordered_set<std::string>& completed_ids) const;
     void retainFrozenTask(FrozenTask task) const {
@@ -49,6 +53,10 @@ private:
     using QueryFrozenTasks = std::function<std::vector<TaskCompletion>(const std::vector<std::string>&)>;
     void pollFrozenTasksWithQuery(const QueryFrozenTasks& query) const;
     mutable std::mutex frozen_poll_mutex_;
+    std::mutex frozen_stop_mutex_;
+    std::condition_variable frozen_stop_cv_;
+    bool frozen_stopping_{false};
+    std::thread frozen_thread_;
     std::shared_ptr<TransferAsyncContext> executeMultiRank(TransferTask task) const;
 
     std::shared_ptr<PerRankBlockTransferEngine>   per_rank_engine_;
