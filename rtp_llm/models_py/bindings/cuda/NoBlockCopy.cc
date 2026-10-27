@@ -545,9 +545,10 @@ bool execStagedMemoryCopy(const StagedMemoryCopyParams& params, StagedMemoryCopy
         }
     }
 
-    const auto completion_error = cudaStreamSynchronize(stream);
-    if (completion_error != cudaSuccess) {
-        throw CopyCompletionUnknown("staged copy synchronization failed");
+    if (err == cudaSuccess) {
+        err = cudaStreamSynchronize(stream);
+    } else {
+        (void)cudaStreamSynchronize(stream);
     }
     if (err != cudaSuccess) {
         RTP_LLM_LOG_WARNING("execStagedMemoryCopy failed: tiles=%zu bytes=%zu direction=%s error=%s",

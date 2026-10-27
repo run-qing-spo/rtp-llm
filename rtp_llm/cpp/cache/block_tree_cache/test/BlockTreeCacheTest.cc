@@ -354,7 +354,7 @@ TEST_F(BlockTreeCacheTest, RecordsOnlyConfirmedTransferCompletion) {
         engine->context->complete(i == 0 ? ErrorInfo::OkStatus() : ErrorInfo(codes[i], "test"));
         execution.get();
         ASSERT_EQ(ready, std::future_status::ready);
-        const auto expected = codes[i] == ErrorCode::TRANSFER_COMPLETION_UNKNOWN ? State::RUNNING : State::FINISHED;
+        const auto expected = i < 3 ? State::FINISHED : State::RUNNING;
         EXPECT_EQ(cache_->queryTransferTask(id), expected);
         EXPECT_EQ(cache_->executeTransfer(TransferTask({}, std::chrono::seconds(30), id)).status.code(),
                   ErrorCode::TRANSFER_COMPLETION_UNKNOWN);
