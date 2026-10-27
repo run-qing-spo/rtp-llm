@@ -294,6 +294,15 @@ public:
             });
     }
 
+    std::shared_ptr<BroadcastResult<QueryKVCMOperationsRequestPB, QueryKVCMOperationsResponsePB>>
+    queryKVCMOperations(const std::vector<QueryKVCMOperationsRequestPB>& requests, int timeout_ms = 200) const {
+        if (timeout_ms <= 0) return nullptr;
+        return broadcast<QueryKVCMOperationsRequestPB, QueryKVCMOperationsResponsePB>(
+            requests, timeout_ms, [](const auto& stub, const auto& context, const auto& request, auto* cq) {
+                return stub->AsyncQueryKVCMOperations(context.get(), request, cq);
+            });
+    }
+
     size_t workerNum() const {
         return worker_addrs_.size();
     }

@@ -43,7 +43,8 @@ public:
     // Lifecycle owner calls this without holding cache/pool locks; waits for in-flight polling.
     void stopFrozenPolling();
     // IDs must come from FINISHED results confirmed across every worker.
-    void releaseCompletedFrozenTasks(const std::unordered_set<std::string>& completed_ids) const;
+    void releaseCompletedFrozenTasks(const std::unordered_set<std::string>& completed_ids,
+                                     FrozenTask::QueryKind query_kind = FrozenTask::QueryKind::TRANSFER) const;
     void retainFrozenTask(FrozenTask task) const {
         std::lock_guard<std::mutex> lock(frozen_mutex_);
         frozen_tasks_.push_back(std::move(task));
@@ -52,6 +53,7 @@ public:
 private:
     using QueryFrozenTasks = std::function<std::vector<TaskCompletion>(const std::vector<std::string>&)>;
     void pollFrozenTasksWithQuery(const QueryFrozenTasks& query) const;
+    void pollFrozenTasksForKind(FrozenTask::QueryKind query_kind, const QueryFrozenTasks& query) const;
     mutable std::mutex frozen_poll_mutex_;
     std::mutex frozen_stop_mutex_;
     std::condition_variable frozen_stop_cv_;

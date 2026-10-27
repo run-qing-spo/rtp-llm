@@ -41,6 +41,7 @@ struct StorageRequest {
     // Match requests expose the complete key sequence. Keys before this
     // boundary are already available from Device/Host/Disk.
     size_t local_matched_blocks_num{0};
+    std::string operation_id;
 
     bool empty() const {
         for (const auto& key_handles : handles) {
@@ -101,6 +102,7 @@ public:
     bool write(StorageWriteTask task);
     // Must not be called from backend I/O or completion callbacks.
     void shutdown();
+    void setFrozenTaskRetainer(std::function<void(FrozenTask)> retainer);
 
 protected:
     const CacheTopology&      topology() const;
@@ -118,6 +120,7 @@ protected:
     virtual ErrorInfo          readImpl(const StorageRequest&                           request,
                                         const std::shared_ptr<StorageBackendMatchMeta>& match_meta) = 0;
     virtual ErrorInfo          writeImpl(const StorageRequest& request)                             = 0;
+    virtual bool               supportsCompletionQueries() const noexcept { return false; }
     virtual void               shutdownImpl() noexcept {}
 
 private:
@@ -148,6 +151,7 @@ private:
 
     std::mutex frozen_mutex_;
     std::vector<FrozenTask> frozen_tasks_;
+    std::function<void(FrozenTask)> frozen_task_retainer_;
 
     friend class LoadAsyncContext;
 };

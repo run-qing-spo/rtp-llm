@@ -109,6 +109,9 @@ public:
     void reportCacheStatusTime(int64_t request_begin_time_us);
     ::grpc::Status QueryTransferTasks(::grpc::ServerContext* context, const QueryTransferTasksRequestPB* request,
                                       QueryTransferTasksResponsePB* response);
+    ::grpc::Status QueryKVCMOperations(::grpc::ServerContext* context,
+                                       const QueryKVCMOperationsRequestPB* request,
+                                       QueryKVCMOperationsResponsePB* response);
 
     ::grpc::Status
     ExecuteFunction(::grpc::ServerContext* context, const ::FunctionRequestPB* request, ::FunctionResponsePB* response);

@@ -61,7 +61,12 @@ BlockTreeCache::BlockTreeCache(std::unique_ptr<BlockTree>                     tr
             config_.host_cache_sync_timeout_ms,
             config_.disk_cache_sync_timeout_ms,
             storage_backend_,
-            [this](bool check_watermark) { onWorkflowSettledLocked(check_watermark); }) {}
+            [this](bool check_watermark) { onWorkflowSettledLocked(check_watermark); }) {
+    if (storage_backend_ && transfer_dispatcher_) {
+        storage_backend_->setFrozenTaskRetainer(
+            [dispatcher = transfer_dispatcher_.get()](FrozenTask task) { dispatcher->retainFrozenTask(std::move(task)); });
+    }
+}
 
 bool BlockTreeCache::init() {
     if (initialized_) {

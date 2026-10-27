@@ -58,17 +58,25 @@ void BlockTransferDispatcher::stopFrozenPolling() {
 
 void BlockTransferDispatcher::pollFrozenTasks() const {
     if (!multi_rank_engine_) return;
-    pollFrozenTasksWithQuery([this](const auto& ids) { return multi_rank_engine_->queryTasks(ids); });
+    pollFrozenTasksForKind(FrozenTask::QueryKind::TRANSFER,
+                           [this](const auto& ids) { return multi_rank_engine_->queryTasks(ids); });
+    pollFrozenTasksForKind(FrozenTask::QueryKind::KVCM,
+                           [this](const auto& ids) { return multi_rank_engine_->queryKVCMOperations(ids); });
 }
 
 void BlockTransferDispatcher::pollFrozenTasksWithQuery(const QueryFrozenTasks& query) const {
+    pollFrozenTasksForKind(FrozenTask::QueryKind::TRANSFER, query);
+}
+
+void BlockTransferDispatcher::pollFrozenTasksForKind(FrozenTask::QueryKind query_kind,
+                                                     const QueryFrozenTasks& query) const {
     std::unique_lock<std::mutex> polling(frozen_poll_mutex_, std::try_to_lock);
     if (!polling.owns_lock()) return;
     std::unordered_set<std::string> unique_ids;
     {
         std::lock_guard<std::mutex> lock(frozen_mutex_);
         for (const auto& task : frozen_tasks_)
-            if (!task.finalFrozen)
+            if (!task.finalFrozen && task.query_kind == query_kind)
                 unique_ids.insert(task.recovery_task_ids.begin(), task.recovery_task_ids.end());
     }
     if (unique_ids.empty()) return;
@@ -78,16 +86,16 @@ void BlockTransferDispatcher::pollFrozenTasksWithQuery(const QueryFrozenTasks& q
     std::unordered_set<std::string> completed_ids;
     for (size_t i = 0; i < ids.size(); ++i)
         if (states[i] == TaskCompletion::FINISHED) completed_ids.insert(ids[i]);
-    releaseCompletedFrozenTasks(completed_ids);
+    releaseCompletedFrozenTasks(completed_ids, query_kind);
 }
 
 void BlockTransferDispatcher::releaseCompletedFrozenTasks(
-    const std::unordered_set<std::string>& completed_ids) const {
+    const std::unordered_set<std::string>& completed_ids, FrozenTask::QueryKind query_kind) const {
     std::vector<FrozenTask> completed;
     {
         std::lock_guard<std::mutex> lock(frozen_mutex_);
         for (auto it = frozen_tasks_.begin(); it != frozen_tasks_.end();) {
-            if (it->readyToRelease(completed_ids)) {
+            if (it->query_kind == query_kind && it->readyToRelease(completed_ids)) {
                 completed.push_back(std::move(*it));
                 it = frozen_tasks_.erase(it);
             } else {

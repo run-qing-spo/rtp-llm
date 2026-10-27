@@ -8,13 +8,14 @@
 
 namespace rtp_llm {
 struct FrozenTask {
+    enum class QueryKind { TRANSFER, KVCM };
     struct Block {
         std::shared_ptr<IBlockPool> pool;
         BlockIdxType block;
     };
-    explicit FrozenTask(const TransferResult& result):
+    explicit FrozenTask(const TransferResult& result, QueryKind query_kind = QueryKind::TRANSFER):
         finalFrozen(result.status.code() != ErrorCode::TRANSFER_COMPLETION_UNKNOWN || result.recovery_task_ids.empty()),
-        recovery_task_ids(result.recovery_task_ids) {}
+        recovery_task_ids(result.recovery_task_ids), query_kind(query_kind) {}
 
     void freeze(std::shared_ptr<IBlockPool> pool, BlockIdxType block) {
         if (std::any_of(blocks.begin(), blocks.end(), [&](const Block& b) {
@@ -38,6 +39,7 @@ struct FrozenTask {
 
     bool finalFrozen;
     std::vector<std::string> recovery_task_ids;
+    QueryKind query_kind;
     std::vector<Block> blocks;
 };
 }  // namespace rtp_llm

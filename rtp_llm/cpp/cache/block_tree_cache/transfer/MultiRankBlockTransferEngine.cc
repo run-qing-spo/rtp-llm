@@ -176,6 +176,41 @@ std::vector<TaskCompletion> MultiRankBlockTransferEngine::queryTasks(
     return states;
 }
 
+std::vector<TaskCompletion> MultiRankBlockTransferEngine::queryKVCMOperations(
+    const std::vector<std::string>& ids, int timeout_ms) const {
+    std::vector<TaskCompletion> states(ids.size(), TaskCompletion::UNKNOWN);
+    if (ids.empty() || !broadcast_manager_ || broadcast_manager_->workerNum() == 0) return states;
+    QueryKVCMOperationsRequestPB request;
+    for (const auto& id : ids) request.add_operation_ids(id);
+    const auto count = broadcast_manager_->workerNum();
+    auto result = broadcast_manager_->queryKVCMOperations(
+        std::vector<QueryKVCMOperationsRequestPB>(count, request), timeout_ms);
+    if (!result || !result->waitForCompletion().ok()) return states;
+    const auto responses = result->responses();
+    if (responses.size() != count) return states;
+    using PB = QueryKVCMOperationsResponsePB::OperationState;
+    for (size_t index = 0; index < ids.size(); ++index) {
+        bool finished = true;
+        bool found_all = true;
+        for (const auto& response : responses) {
+            const QueryKVCMOperationsResponsePB::OperationState* found = nullptr;
+            for (const auto& entry : response.operations()) {
+                if (entry.operation_id() != ids[index]) continue;
+                if (found) { found_all = false; break; }
+                found = &entry;
+            }
+            if (!found || (found->state() != PB::FINISHED && found->state() != PB::RUNNING)) {
+                found_all = false;
+                break;
+            }
+            if (found->state() == PB::RUNNING) finished = false;
+        }
+        states[index] = !found_all ? TaskCompletion::UNKNOWN :
+                        finished  ? TaskCompletion::FINISHED : TaskCompletion::PENDING;
+    }
+    return states;
+}
+
 std::shared_ptr<TransferAsyncContext> MultiRankBlockTransferEngine::execute(TransferTask task) const {
     const size_t block_count       = task.descriptors().size();
     const auto   deadline_exceeded = [block_count]() {

@@ -1179,6 +1179,17 @@ void LocalRpcServer::reportCacheStatusTime(int64_t request_begin_time_us) {
     return grpc::Status::OK;
 }
 
+::grpc::Status LocalRpcServer::QueryKVCMOperations(::grpc::ServerContext* context,
+                                                   const QueryKVCMOperationsRequestPB* request,
+                                                   QueryKVCMOperationsResponsePB* response) {
+    if (context->IsCancelled()) return {grpc::StatusCode::CANCELLED, "request cancelled"};
+    auto manager = engine_ ? engine_->getCacheManager() : nullptr;
+    if (!manager) return {grpc::StatusCode::UNAVAILABLE, "cache manager unavailable"};
+    if (!manager->queryKVCMOperations(*request, *response))
+        return {grpc::StatusCode::UNIMPLEMENTED, "KVCM operation queries unavailable"};
+    return grpc::Status::OK;
+}
+
 ::grpc::Status LocalRpcServer::ExecuteFunction(::grpc::ServerContext*     context,
                                                const ::FunctionRequestPB* request,
                                                ::FunctionResponsePB*      response) {

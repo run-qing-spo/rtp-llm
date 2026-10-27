@@ -133,6 +133,8 @@ cc_library(
         "ScopeRollback.h",
         "storage_backend/StorageBackend.h",
         "storage_backend/StorageBackendExecutor.h",
+        "storage_backend/KVCMOperationId.h",
+        "storage_backend/KVCMOperationRegistry.h",
         "TreeNode.h",
         "transfer/BlockTransferDispatcher.h",
         "transfer/FrozenTask.h",
