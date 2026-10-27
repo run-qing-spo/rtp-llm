@@ -157,6 +157,7 @@ private:
                                                                  bool&                high_reached) const;
 
     BlockTree*                          tree_;
+    const BlockTransferDispatcher*      transfer_dispatcher_{nullptr};
     BlockTreeTaskPool*                  task_pool_{nullptr};
     BlockTreeCacheMetricsReporter*      metrics_reporter_{nullptr};
     std::mutex*                         mutex_{nullptr};
