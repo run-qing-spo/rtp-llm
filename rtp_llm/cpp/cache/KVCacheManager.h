@@ -134,8 +134,6 @@ public:
     bool executeFunction(const FunctionRequestPB& request, FunctionResponsePB& response);
     bool queryTransferTasks(const QueryTransferTasksRequestPB& request, QueryTransferTasksResponsePB& response) const;
 
-    bool forgetTransferTasks(const ForgetTransferTasksRequestPB& request);
-
     BlockTreeCachePtr blockTreeCache() const {
         return block_tree_cache_;
     }

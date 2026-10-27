@@ -24,17 +24,6 @@ public:
         return true;
     }
 
-    // Coordinator calls only after confirming completion across all workers.
-    // Missing records are already cleaned; RUNNING records must remain queryable.
-    bool forget(const std::string& task_id) {
-        std::lock_guard<std::mutex> lock(mutex_);
-        const auto it = tasks_.find(task_id);
-        if (it == tasks_.end()) return true;
-        if (it->second != State::FINISHED) return false;
-        tasks_.erase(it);
-        return true;
-    }
-
     State query(const std::string& task_id) const {
         std::lock_guard<std::mutex> lock(mutex_);
         const auto it = tasks_.find(task_id);

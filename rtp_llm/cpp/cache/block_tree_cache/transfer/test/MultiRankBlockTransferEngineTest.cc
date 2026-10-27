@@ -344,7 +344,6 @@ TEST_F(MultiRankBlockTransferEngineTest, DeadlineThenWorkerCompletionReleasesFro
     dispatcher.retainFrozenTask(std::move(task));
     dispatcher.pollFrozenTasks();
     EXPECT_TRUE(pool->isFrozen(block));
-    EXPECT_TRUE(dispatcher.multi_rank_engine_->pending_cleanup_->ids.empty());
     release.set_value();
     {
         std::unique_lock<std::mutex> lock(state->mutex);
@@ -355,7 +354,7 @@ TEST_F(MultiRankBlockTransferEngineTest, DeadlineThenWorkerCompletionReleasesFro
     dispatcher.pollFrozenTasks();
     EXPECT_FALSE(pool->isAllocated(block));
     EXPECT_TRUE(dispatcher.frozen_tasks_.empty());
-    EXPECT_EQ(dispatcher.multi_rank_engine_->pending_cleanup_->ids.count(id), 1u);
+    EXPECT_EQ(state->registry.query(id), TransferTaskRegistry::State::FINISHED);
 }
 
 TEST_F(MultiRankBlockTransferEngineTest, BroadcastTransferSucceedsForAllWorkers) {

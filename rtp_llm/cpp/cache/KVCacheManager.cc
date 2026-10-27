@@ -671,15 +671,6 @@ KVCacheManager::incrKVCacheRef(const KVCacheResource& resource, const CacheKeysT
     return coordinator_manager_->incrKVCacheRef(resource, cache_keys, is_connector);
 }
 
-bool KVCacheManager::forgetTransferTasks(const ForgetTransferTasksRequestPB& request) {
-    if (!block_tree_cache_) return false;
-    bool complete = true;
-    for (const auto& id : request.task_ids()) {
-        if (!block_tree_cache_->forgetTransferTask(id)) complete = false;
-    }
-    return complete;
-}
-
 bool KVCacheManager::queryTransferTasks(const QueryTransferTasksRequestPB& request,
                                        QueryTransferTasksResponsePB& response) const {
     response.clear_tasks();

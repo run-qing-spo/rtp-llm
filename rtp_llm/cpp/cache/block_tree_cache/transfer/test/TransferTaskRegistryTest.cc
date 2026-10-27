@@ -4,23 +4,6 @@
 #include "rtp_llm/cpp/cache/block_tree_cache/transfer/TransferTaskId.h"
 
 namespace rtp_llm {
-TEST(TransferTaskRegistryTest, ForgetRejectsRunningAndIsIdempotentAfterCompletion) {
-    TransferTaskRegistry registry;
-    using State = TransferTaskRegistry::State;
-    EXPECT_TRUE(registry.forget("missing"));
-    ASSERT_TRUE(registry.start("task"));
-    ASSERT_TRUE(registry.start("other"));
-    EXPECT_FALSE(registry.forget("task"));
-    EXPECT_EQ(registry.query("task"), State::RUNNING);
-    ASSERT_TRUE(registry.finish("task"));
-    EXPECT_TRUE(registry.forget("task"));
-    EXPECT_EQ(registry.query("task"), State::NOT_FOUND);
-    EXPECT_TRUE(registry.forget("task"));
-    EXPECT_FALSE(registry.finish("task"));
-    EXPECT_EQ(registry.query("task"), State::NOT_FOUND);
-    EXPECT_EQ(registry.query("other"), State::RUNNING);
-}
-
 TEST(TransferTaskRegistryTest, MixedQueriesPreserveMissingRecords) {
     TransferTaskRegistry registry;
     using State = TransferTaskRegistry::State;

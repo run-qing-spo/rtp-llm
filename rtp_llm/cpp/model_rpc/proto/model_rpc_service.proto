@@ -712,11 +712,6 @@ service EmbeddingRpcService {
     rpc health(EmbeddingHealthRequestPB) returns (EmptyPB);
 }
 
-// Send only after every worker has confirmed this execution stopped accessing blocks.
-message ForgetTransferTasksRequestPB {
-    repeated string task_ids = 1;
-}
-
 // Read-only query of worker-local memory transfer execution records.
 message QueryTransferTasksRequestPB {
     repeated string task_ids = 1;
@@ -1019,9 +1014,6 @@ service RpcService {
 
     rpc ExecuteFunction(FunctionRequestPB) returns (FunctionResponsePB);
     rpc QueryTransferTasks(QueryTransferTasksRequestPB) returns (QueryTransferTasksResponsePB);
-    // Missing IDs are a successful no-op. RUNNING IDs are kept and cause FAILED_PRECONDITION.
-    // Partial cleanup is allowed; retry the entire batch after any RPC failure.
-    rpc ForgetTransferTasks(ForgetTransferTasksRequestPB) returns (EmptyPB);
     rpc StartLoad(P2PConnectorStartLoadRequestPB) returns (P2PConnectorStartLoadResponsePB);
     rpc GetPeerInfo(GetPeerInfoRequestPB) returns (GetPeerInfoResponsePB);
     rpc EnqueueBatch(EnqueueBatchRequestPB) returns (EnqueueBatchResponsePB);

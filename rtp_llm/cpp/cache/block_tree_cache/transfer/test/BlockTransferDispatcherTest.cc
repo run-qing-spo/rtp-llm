@@ -20,54 +20,6 @@
 namespace rtp_llm {
 namespace {
 
-TEST(BlockTransferDispatcherTest, RecoveryCleanupWaitsForWholeTaskAndRetriesWithoutQueryingAgain) {
-    auto multi = std::make_shared<MultiRankBlockTransferEngine>(std::vector<GroupSetPtr>{}, nullptr);
-    BlockTransferDispatcher dispatcher(nullptr, multi);
-    dispatcher.stopFrozenPolling();
-    TransferResult result(ErrorInfo(ErrorCode::TRANSFER_COMPLETION_UNKNOWN, "timeout"));
-    dispatcher.retainFrozenTask(FrozenTask(result));  // Permanent freeze never enters cleanup.
-    result.recovery_task_ids = {"one", "two"};
-    dispatcher.retainFrozenTask(FrozenTask(result));
-    dispatcher.pollFrozenTasksWithQuery([](const auto& ids) {
-        return std::vector<TaskCompletion>(ids.size(), TaskCompletion::UNKNOWN);
-    });
-    EXPECT_TRUE(multi->pending_cleanup_->ids.empty());
-    dispatcher.releaseCompletedFrozenTasks({"one"});
-    EXPECT_TRUE(multi->pending_cleanup_->ids.empty());
-    EXPECT_EQ(dispatcher.frozen_tasks_.size(), 2u);
-    dispatcher.releaseCompletedFrozenTasks({"one", "two"});
-    EXPECT_EQ(dispatcher.frozen_tasks_.size(), 1u);
-    const std::unordered_set<std::string> expected{"one", "two"};
-    EXPECT_EQ(multi->pending_cleanup_->ids, expected);
-    multi->retryCleanupWith([](const auto&) { return false; });
-    dispatcher.pollFrozenTasksWithQuery([](const auto&) {
-        ADD_FAILURE() << "Released tasks must not be queried after partial cleanup";
-        return std::vector<TaskCompletion>{};
-    });
-    EXPECT_EQ(multi->pending_cleanup_->ids, expected);
-    multi->retryCleanupWith([](const auto&) { return true; });
-    dispatcher.releaseCompletedFrozenTasks({"one", "two"});
-    EXPECT_TRUE(multi->pending_cleanup_->ids.empty());
-}
-
-TEST(BlockTransferDispatcherTest, CleanupRetriesSnapshotWithoutDroppingNewIds) {
-    MultiRankBlockTransferEngine engine({}, nullptr);
-    engine.pending_cleanup_->ids.insert("done");
-    engine.retryCleanupWith([](const auto&) { return false; });
-    EXPECT_EQ(engine.pending_cleanup_->ids.count("done"), 1u);
-    EXPECT_THROW(engine.retryCleanupWith([](const auto&) -> bool { throw std::runtime_error("rpc"); }),
-                 std::runtime_error);
-    engine.retryCleanupWith([&](const auto& ids) {
-        EXPECT_EQ(ids, std::vector<std::string>{"done"});
-        std::lock_guard<std::mutex> lock(engine.pending_cleanup_->mutex);
-        engine.pending_cleanup_->ids.insert("new");
-        return true;
-    });
-    EXPECT_EQ(engine.pending_cleanup_->ids, (std::unordered_set<std::string>{"new"}));
-    engine.retryCleanupWith([](const auto&) { return true; });
-    engine.retryCleanupWith([](const auto&) { ADD_FAILURE(); return true; });
-}
-
 TEST(BlockTransferDispatcherTest, StopWakesSleepingPollerAndJoinsBeforeDestruction) {
     auto multi = std::make_shared<MultiRankBlockTransferEngine>(std::vector<GroupSetPtr>{}, nullptr);
     BlockTransferDispatcher dispatcher(nullptr, multi);

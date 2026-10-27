@@ -1,8 +1,5 @@
 #pragma once
 
-#include <functional>
-#include <mutex>
-#include <unordered_set>
 #include <memory>
 #include <vector>
 
@@ -22,18 +19,9 @@ public:
     std::shared_ptr<TransferAsyncContext> execute(TransferTask task) const;
     std::vector<TaskCompletion> queryTasks(const std::vector<std::string>& ids, int timeout_ms = 200) const;
 
-    void retryPendingCleanup() const;
-
 private:
     friend class BlockTransferDispatcher;
 
-    struct PendingCleanup {
-        std::mutex mutex;
-        std::unordered_set<std::string> ids;
-    };
-    std::shared_ptr<PendingCleanup> pending_cleanup_{std::make_shared<PendingCleanup>()};
-    void enqueueCompletedTasks(const std::vector<std::string>& ids) const;
-    void retryCleanupWith(const std::function<bool(const std::vector<std::string>&)>& cleanup) const;
     std::vector<GroupSetPtr>          group_sets_;
     std::shared_ptr<BroadcastManager> broadcast_manager_;
 };

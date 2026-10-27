@@ -152,10 +152,6 @@ public:
         return transfer_task_registry_.query(task_id);
     }
 
-    bool forgetTransferTask(const std::string& task_id) {
-        return transfer_task_registry_.forget(task_id);
-    }
-
     // Accessors
     BlockTree* tree() const {
         return tree_.get();

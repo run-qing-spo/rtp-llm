@@ -30,7 +30,6 @@ BlockTransferDispatcher::BlockTransferDispatcher(std::shared_ptr<PerRankBlockTra
             while (!frozen_stop_cv_.wait_for(lock, std::chrono::seconds(1), [this] { return frozen_stopping_; })) {
                 lock.unlock();
                 try {
-                    multi_rank_engine_->retryPendingCleanup();
                     pollFrozenTasks();
                 } catch (const std::exception& error) {
                     RTP_LLM_LOG_WARNING("frozen task polling failed: %s", error.what());
@@ -97,10 +96,7 @@ void BlockTransferDispatcher::releaseCompletedFrozenTasks(
         }
     }
     // Pool capacity callbacks must not run under frozen_mutex_.
-    for (auto& task : completed) {
-        if (task.unfreeze(completed_ids) && multi_rank_engine_)
-            multi_rank_engine_->enqueueCompletedTasks(task.recovery_task_ids);
-    }
+    for (auto& task : completed) task.unfreeze(completed_ids);
 }
 
 void BlockTransferDispatcher::drainTransfers() const {
