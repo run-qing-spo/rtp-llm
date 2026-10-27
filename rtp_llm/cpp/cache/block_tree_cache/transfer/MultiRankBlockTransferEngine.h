@@ -32,6 +32,7 @@ private:
         std::unordered_set<std::string> ids;
     };
     std::shared_ptr<PendingCleanup> pending_cleanup_{std::make_shared<PendingCleanup>()};
+    void enqueueCompletedTasks(const std::vector<std::string>& ids) const;
     void retryCleanupWith(const std::function<bool(const std::vector<std::string>&)>& cleanup) const;
     std::vector<GroupSetPtr>          group_sets_;
     std::shared_ptr<BroadcastManager> broadcast_manager_;

@@ -160,6 +160,11 @@ MultiRankBlockTransferEngine::MultiRankBlockTransferEngine(std::vector<GroupSetP
                                                            std::shared_ptr<BroadcastManager> broadcast_manager):
     group_sets_(std::move(group_sets)), broadcast_manager_(std::move(broadcast_manager)) {}
 
+void MultiRankBlockTransferEngine::enqueueCompletedTasks(const std::vector<std::string>& ids) const {
+    std::lock_guard<std::mutex> lock(pending_cleanup_->mutex);
+    pending_cleanup_->ids.insert(ids.begin(), ids.end());
+}
+
 void MultiRankBlockTransferEngine::retryCleanupWith(
     const std::function<bool(const std::vector<std::string>&)>& cleanup) const {
     std::vector<std::string> ids;

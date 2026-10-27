@@ -20,6 +20,36 @@
 namespace rtp_llm {
 namespace {
 
+TEST(BlockTransferDispatcherTest, RecoveryCleanupWaitsForWholeTaskAndRetriesWithoutQueryingAgain) {
+    auto multi = std::make_shared<MultiRankBlockTransferEngine>(std::vector<GroupSetPtr>{}, nullptr);
+    BlockTransferDispatcher dispatcher(nullptr, multi);
+    dispatcher.stopFrozenPolling();
+    TransferResult result(ErrorInfo(ErrorCode::TRANSFER_COMPLETION_UNKNOWN, "timeout"));
+    dispatcher.retainFrozenTask(FrozenTask(result));  // Permanent freeze never enters cleanup.
+    result.recovery_task_ids = {"one", "two"};
+    dispatcher.retainFrozenTask(FrozenTask(result));
+    dispatcher.pollFrozenTasksWithQuery([](const auto& ids) {
+        return std::vector<TaskCompletion>(ids.size(), TaskCompletion::UNKNOWN);
+    });
+    EXPECT_TRUE(multi->pending_cleanup_->ids.empty());
+    dispatcher.releaseCompletedFrozenTasks({"one"});
+    EXPECT_TRUE(multi->pending_cleanup_->ids.empty());
+    EXPECT_EQ(dispatcher.frozen_tasks_.size(), 2u);
+    dispatcher.releaseCompletedFrozenTasks({"one", "two"});
+    EXPECT_EQ(dispatcher.frozen_tasks_.size(), 1u);
+    const std::unordered_set<std::string> expected{"one", "two"};
+    EXPECT_EQ(multi->pending_cleanup_->ids, expected);
+    multi->retryCleanupWith([](const auto&) { return false; });
+    dispatcher.pollFrozenTasksWithQuery([](const auto&) {
+        ADD_FAILURE() << "Released tasks must not be queried after partial cleanup";
+        return std::vector<TaskCompletion>{};
+    });
+    EXPECT_EQ(multi->pending_cleanup_->ids, expected);
+    multi->retryCleanupWith([](const auto&) { return true; });
+    dispatcher.releaseCompletedFrozenTasks({"one", "two"});
+    EXPECT_TRUE(multi->pending_cleanup_->ids.empty());
+}
+
 TEST(BlockTransferDispatcherTest, CleanupRetriesSnapshotWithoutDroppingNewIds) {
     MultiRankBlockTransferEngine engine({}, nullptr);
     engine.pending_cleanup_->ids.insert("done");

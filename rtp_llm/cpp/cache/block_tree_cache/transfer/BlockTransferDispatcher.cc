@@ -97,7 +97,10 @@ void BlockTransferDispatcher::releaseCompletedFrozenTasks(
         }
     }
     // Pool capacity callbacks must not run under frozen_mutex_.
-    for (auto& task : completed) task.unfreeze(completed_ids);
+    for (auto& task : completed) {
+        if (task.unfreeze(completed_ids) && multi_rank_engine_)
+            multi_rank_engine_->enqueueCompletedTasks(task.recovery_task_ids);
+    }
 }
 
 void BlockTransferDispatcher::drainTransfers() const {
