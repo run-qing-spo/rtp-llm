@@ -160,6 +160,40 @@ MultiRankBlockTransferEngine::MultiRankBlockTransferEngine(std::vector<GroupSetP
                                                            std::shared_ptr<BroadcastManager> broadcast_manager):
     group_sets_(std::move(group_sets)), broadcast_manager_(std::move(broadcast_manager)) {}
 
+void MultiRankBlockTransferEngine::enqueueFinishedTasks(const std::vector<std::string>& ids) const {
+    std::lock_guard<std::mutex> lock(cleanup_->mutex);
+    cleanup_->ids.insert(ids.begin(), ids.end());
+}
+
+void MultiRankBlockTransferEngine::forgetFinishedTasksWith(const ForgetTasks& forget) const {
+    std::unique_lock<std::mutex> polling(cleanup_poll_mutex_, std::try_to_lock);
+    if (!polling.owns_lock()) return;
+    std::vector<std::string> ids;
+    {
+        std::lock_guard<std::mutex> lock(cleanup_->mutex);
+        constexpr size_t kMaxCleanupBatch = 1024;
+        for (const auto& id : cleanup_->ids) {
+            ids.push_back(id);
+            if (ids.size() == kMaxCleanupBatch) break;
+        }
+    }
+    // No queue/cache/pool lock across RPC. Failure or exception leaves the batch for retry.
+    if (ids.empty() || !forget(ids)) return;
+    std::lock_guard<std::mutex> lock(cleanup_->mutex);
+    for (const auto& id : ids) cleanup_->ids.erase(id);
+}
+
+void MultiRankBlockTransferEngine::forgetFinishedTasks() const {
+    if (!broadcast_manager_ || broadcast_manager_->workerNum() == 0) return;
+    forgetFinishedTasksWith([this](const auto& ids) {
+        ForgetTransferTasksRequestPB request;
+        for (const auto& id : ids) request.add_task_ids(id);
+        auto result = broadcast_manager_->forgetTransferTasks(
+            std::vector<ForgetTransferTasksRequestPB>(broadcast_manager_->workerNum(), request));
+        return result && result->waitForCompletion().ok();
+    });
+}
+
 std::vector<TaskCompletion> MultiRankBlockTransferEngine::queryTasks(
     const std::vector<std::string>& ids, int timeout_ms) const {
     std::vector<TaskCompletion> states(ids.size(), TaskCompletion::UNKNOWN);
@@ -258,7 +292,14 @@ std::shared_ptr<TransferAsyncContext> MultiRankBlockTransferEngine::execute(Tran
                            CacheCopyError::RPC_FAILED),
             block_count);
     }
-    return MultiRankTransferAsyncContext::create(std::move(broadcast_result), worker_count, block_count, request.task_id());
+    auto context = MultiRankTransferAsyncContext::create(
+        std::move(broadcast_result), worker_count, block_count, request.task_id());
+    context->onDone([queue = cleanup_, id = request.task_id()](TransferResult result) {
+        if (!result.ok()) return;
+        std::lock_guard<std::mutex> lock(queue->mutex);
+        queue->ids.insert(id);
+    });
+    return context;
 }
 
 }  // namespace rtp_llm

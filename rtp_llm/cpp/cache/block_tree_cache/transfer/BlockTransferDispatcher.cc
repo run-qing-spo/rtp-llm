@@ -58,6 +58,7 @@ void BlockTransferDispatcher::stopFrozenPolling() {
 
 void BlockTransferDispatcher::pollFrozenTasks() const {
     if (!multi_rank_engine_) return;
+    multi_rank_engine_->forgetFinishedTasks();
     pollFrozenTasksForKind(FrozenTask::QueryKind::TRANSFER,
                            [this](const auto& ids) { return multi_rank_engine_->queryTasks(ids); });
     pollFrozenTasksForKind(FrozenTask::QueryKind::KVCM,
@@ -104,7 +105,11 @@ void BlockTransferDispatcher::releaseCompletedFrozenTasks(
         }
     }
     // Pool capacity callbacks must not run under frozen_mutex_.
-    for (auto& task : completed) task.unfreeze(completed_ids);
+    for (auto& task : completed) {
+        if (task.unfreeze(completed_ids) && multi_rank_engine_ && query_kind == FrozenTask::QueryKind::TRANSFER) {
+            multi_rank_engine_->enqueueFinishedTasks(task.recovery_task_ids);
+        }
+    }
 }
 
 void BlockTransferDispatcher::drainTransfers() const {
