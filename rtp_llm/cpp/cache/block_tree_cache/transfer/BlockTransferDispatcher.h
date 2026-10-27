@@ -37,6 +37,7 @@ public:
     // Lifecycle-only drain, not task admission or a request-level sync API.
     // Call after producers stop; callbacks can still submit a subsequent stage.
     void drainTransfers() const;
+    void pollFrozenTasks() const;
     // IDs must come from FINISHED results confirmed across every worker.
     void releaseCompletedFrozenTasks(const std::unordered_set<std::string>& completed_ids) const;
     void retainFrozenTask(FrozenTask task) const {
@@ -45,6 +46,9 @@ public:
     }
 
 private:
+    using QueryFrozenTasks = std::function<std::vector<TaskCompletion>(const std::vector<std::string>&)>;
+    void pollFrozenTasksWithQuery(const QueryFrozenTasks& query) const;
+    mutable std::mutex frozen_poll_mutex_;
     std::shared_ptr<TransferAsyncContext> executeMultiRank(TransferTask task) const;
 
     std::shared_ptr<PerRankBlockTransferEngine>   per_rank_engine_;

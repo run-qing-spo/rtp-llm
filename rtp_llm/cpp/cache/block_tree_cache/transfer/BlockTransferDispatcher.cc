@@ -29,6 +29,31 @@ BlockTransferDispatcher::~BlockTransferDispatcher() {
     drainTransfers();
 }
 
+void BlockTransferDispatcher::pollFrozenTasks() const {
+    if (!multi_rank_engine_) return;
+    pollFrozenTasksWithQuery([this](const auto& ids) { return multi_rank_engine_->queryTasks(ids); });
+}
+
+void BlockTransferDispatcher::pollFrozenTasksWithQuery(const QueryFrozenTasks& query) const {
+    std::unique_lock<std::mutex> polling(frozen_poll_mutex_, std::try_to_lock);
+    if (!polling.owns_lock()) return;
+    std::unordered_set<std::string> unique_ids;
+    {
+        std::lock_guard<std::mutex> lock(frozen_mutex_);
+        for (const auto& task : frozen_tasks_)
+            if (!task.finalFrozen)
+                unique_ids.insert(task.recovery_task_ids.begin(), task.recovery_task_ids.end());
+    }
+    if (unique_ids.empty()) return;
+    const std::vector<std::string> ids(unique_ids.begin(), unique_ids.end());
+    const auto states = query(ids);  // No frozen-list lock or borrowed task references across RPC.
+    if (states.size() != ids.size()) return;
+    std::unordered_set<std::string> completed_ids;
+    for (size_t i = 0; i < ids.size(); ++i)
+        if (states[i] == TaskCompletion::FINISHED) completed_ids.insert(ids[i]);
+    releaseCompletedFrozenTasks(completed_ids);
+}
+
 void BlockTransferDispatcher::releaseCompletedFrozenTasks(
     const std::unordered_set<std::string>& completed_ids) const {
     std::vector<FrozenTask> completed;

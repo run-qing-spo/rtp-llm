@@ -240,6 +240,40 @@ protected:
     std::unique_ptr<BlockTreeCache> cache_;
 };
 
+TEST_F(BlockTreeCacheTest, FrozenPollingUsesSnapshotAndKeepsUnknownTasks) {
+    auto& dispatcher = *cache_->transfer_dispatcher_;
+    auto pool = makeStructuralDevicePool(0);
+    const auto first = pool->malloc().value(), second = pool->malloc().value();
+    TransferResult result(ErrorInfo(ErrorCode::TRANSFER_COMPLETION_UNKNOWN, "timeout"));
+    result.recovery_task_ids = {"first"};
+    FrozenTask initial(result);
+    initial.freeze(pool, first);
+    dispatcher.retainFrozenTask(std::move(initial));
+    dispatcher.pollFrozenTasksWithQuery([&](const auto& ids) {
+        EXPECT_EQ(ids, (std::vector<std::string>{"first"}));
+        const bool unlocked = dispatcher.frozen_mutex_.try_lock();
+        EXPECT_TRUE(unlocked);
+        if (unlocked) {
+            dispatcher.frozen_mutex_.unlock();
+            result.recovery_task_ids = {"second"};
+            FrozenTask added(result);
+            added.freeze(pool, second);
+            dispatcher.retainFrozenTask(std::move(added));
+        }
+        return std::vector<TaskCompletion>{TaskCompletion::UNKNOWN};
+    });
+    EXPECT_TRUE(pool->isFrozen(first));
+    EXPECT_TRUE(pool->isFrozen(second));
+    dispatcher.pollFrozenTasksWithQuery([](const auto& ids) {
+        std::vector<TaskCompletion> states;
+        for (const auto& id : ids) states.push_back(id == "first" ? TaskCompletion::FINISHED : TaskCompletion::PENDING);
+        return states;
+    });
+    EXPECT_FALSE(pool->isAllocated(first));
+    EXPECT_TRUE(pool->isFrozen(second));
+    EXPECT_EQ(dispatcher.frozen_tasks_.size(), 1u);
+}
+
 TEST_F(BlockTreeCacheTest, FrozenTaskReleasesOnlyAfterAllExecutionsFinish) {
     auto pool = makeStructuralDevicePool(0);
     const auto first = pool->malloc().value(), second = pool->malloc().value(), permanent = pool->malloc().value();
