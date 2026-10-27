@@ -9,6 +9,7 @@
 
 #include "rtp_llm/cpp/cache/block_tree_cache/transfer/TransferAsyncContext.h"
 #include "rtp_llm/cpp/cache/block_tree_cache/transfer/TransferTypes.h"
+#include "rtp_llm/cpp/cache/block_tree_cache/transfer/FrozenTask.h"
 
 namespace rtp_llm {
 
@@ -36,6 +37,10 @@ public:
     // Lifecycle-only drain, not task admission or a request-level sync API.
     // Call after producers stop; callbacks can still submit a subsequent stage.
     void drainTransfers() const;
+    void retainFrozenTask(FrozenTask task) const {
+        std::lock_guard<std::mutex> lock(frozen_mutex_);
+        frozen_tasks_.push_back(std::move(task));
+    }
 
 private:
     std::shared_ptr<TransferAsyncContext> executeMultiRank(TransferTask task) const;
@@ -46,6 +51,8 @@ private:
     mutable std::mutex                            completion_mutex_;
     mutable std::vector<std::shared_future<void>>  transfer_completions_;
     std::function<void()>                         drain_observer_for_test_;
+    mutable std::mutex                            frozen_mutex_;
+    mutable std::vector<FrozenTask>                frozen_tasks_;
 };
 
 using BlockTransferDispatcherPtr = std::shared_ptr<BlockTransferDispatcher>;

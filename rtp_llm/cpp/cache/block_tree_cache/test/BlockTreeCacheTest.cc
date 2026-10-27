@@ -240,6 +240,27 @@ protected:
     std::unique_ptr<BlockTreeCache> cache_;
 };
 
+TEST_F(BlockTreeCacheTest, FrozenTaskRetainsRecoveryIdsAndUniqueSlots) {
+    TransferResult result(ErrorInfo(ErrorCode::TRANSFER_COMPLETION_UNKNOWN, "timeout"));
+    EXPECT_TRUE(FrozenTask(result).finalFrozen);
+    result.recovery_task_ids = {"batch1", "batch2"};
+    FrozenTask frozen(result);
+    EXPECT_FALSE(frozen.finalFrozen);
+    auto pool = makeStructuralDevicePool(0);
+    auto block = pool->malloc();
+    ASSERT_TRUE(block.has_value());
+    frozen.freeze(pool, *block);
+    frozen.freeze(pool, *block);
+    EXPECT_TRUE(pool->isFrozen(*block));
+    ASSERT_EQ(frozen.blocks.size(), 1u);
+    cache_->transfer_dispatcher_->retainFrozenTask(std::move(frozen));
+    const auto& saved = cache_->transfer_dispatcher_->frozen_tasks_;
+    ASSERT_EQ(saved.size(), 1u);
+    EXPECT_EQ(saved[0].recovery_task_ids, result.recovery_task_ids);
+    EXPECT_EQ(saved[0].blocks[0].pool.get(), pool.get());
+    EXPECT_EQ(saved[0].blocks[0].block, *block);
+}
+
 TEST_F(BlockTreeCacheTest, RecordsOnlyConfirmedTransferCompletion) {
     class Engine final: public PerRankBlockTransferEngine {
     public:

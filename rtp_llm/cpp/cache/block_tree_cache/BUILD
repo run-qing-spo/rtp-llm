@@ -135,6 +135,7 @@ cc_library(
         "storage_backend/StorageBackendExecutor.h",
         "TreeNode.h",
         "transfer/BlockTransferDispatcher.h",
+        "transfer/FrozenTask.h",
         "transfer/MultiRankBlockTransferEngine.h",
         "transfer/PerRankBlockTransferEngine.h",
         "transfer/TransferExecutor.h",
