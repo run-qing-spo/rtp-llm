@@ -240,6 +240,38 @@ protected:
     std::unique_ptr<BlockTreeCache> cache_;
 };
 
+TEST_F(BlockTreeCacheTest, FrozenTaskReleasesOnlyAfterAllExecutionsFinish) {
+    auto pool = makeStructuralDevicePool(0);
+    const auto first = pool->malloc().value(), second = pool->malloc().value(), permanent = pool->malloc().value();
+    pool->incTreeRef(first, BlockTreeRefType::LOAD);
+    TransferResult result(ErrorInfo(ErrorCode::TRANSFER_COMPLETION_UNKNOWN, "timeout"));
+    FrozenTask final_task(result);
+    final_task.freeze(pool, permanent);
+    result.recovery_task_ids = {"one", "two"};
+    FrozenTask recoverable(result);
+    recoverable.freeze(pool, first);
+    recoverable.freeze(pool, second);
+    auto& dispatcher = *cache_->transfer_dispatcher_;
+    dispatcher.retainFrozenTask(std::move(final_task));
+    dispatcher.retainFrozenTask(std::move(recoverable));
+    dispatcher.releaseCompletedFrozenTasks({"one"});
+    EXPECT_TRUE(pool->isFrozen(first));
+    EXPECT_TRUE(pool->isFrozen(second));
+    EXPECT_EQ(dispatcher.frozen_tasks_.size(), 2u);
+    const auto free_before = pool->freeBlocksNum();
+    dispatcher.releaseCompletedFrozenTasks({"one", "two"});
+    EXPECT_FALSE(pool->isFrozen(first));
+    EXPECT_TRUE(pool->isAllocated(first));
+    EXPECT_EQ(pool->treeRefCount(first), 1u);
+    EXPECT_FALSE(pool->isAllocated(second));
+    EXPECT_EQ(pool->freeBlocksNum(), free_before + 1);
+    EXPECT_TRUE(pool->isFrozen(permanent));
+    EXPECT_EQ(dispatcher.frozen_tasks_.size(), 1u);
+    dispatcher.releaseCompletedFrozenTasks({"one", "two"});
+    EXPECT_EQ(pool->freeBlocksNum(), free_before + 1);
+    pool->decTreeRef(first, BlockTreeRefType::LOAD);
+}
+
 TEST_F(BlockTreeCacheTest, FrozenTaskRetainsRecoveryIdsAndUniqueSlots) {
     TransferResult result(ErrorInfo(ErrorCode::TRANSFER_COMPLETION_UNKNOWN, "timeout"));
     EXPECT_TRUE(FrozenTask(result).finalFrozen);

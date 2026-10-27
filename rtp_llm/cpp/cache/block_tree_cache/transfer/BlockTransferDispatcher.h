@@ -37,6 +37,8 @@ public:
     // Lifecycle-only drain, not task admission or a request-level sync API.
     // Call after producers stop; callbacks can still submit a subsequent stage.
     void drainTransfers() const;
+    // IDs must come from FINISHED results confirmed across every worker.
+    void releaseCompletedFrozenTasks(const std::unordered_set<std::string>& completed_ids) const;
     void retainFrozenTask(FrozenTask task) const {
         std::lock_guard<std::mutex> lock(frozen_mutex_);
         frozen_tasks_.push_back(std::move(task));

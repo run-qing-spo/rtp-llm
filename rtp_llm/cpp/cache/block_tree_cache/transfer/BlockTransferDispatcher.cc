@@ -29,6 +29,24 @@ BlockTransferDispatcher::~BlockTransferDispatcher() {
     drainTransfers();
 }
 
+void BlockTransferDispatcher::releaseCompletedFrozenTasks(
+    const std::unordered_set<std::string>& completed_ids) const {
+    std::vector<FrozenTask> completed;
+    {
+        std::lock_guard<std::mutex> lock(frozen_mutex_);
+        for (auto it = frozen_tasks_.begin(); it != frozen_tasks_.end();) {
+            if (it->readyToRelease(completed_ids)) {
+                completed.push_back(std::move(*it));
+                it = frozen_tasks_.erase(it);
+            } else {
+                ++it;
+            }
+        }
+    }
+    // Pool capacity callbacks must not run under frozen_mutex_.
+    for (auto& task : completed) task.unfreeze(completed_ids);
+}
+
 void BlockTransferDispatcher::drainTransfers() const {
     bool observed = false;
     for (;;) {

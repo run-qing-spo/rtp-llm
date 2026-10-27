@@ -2,6 +2,7 @@
 #include <algorithm>
 #include <memory>
 #include <vector>
+#include <unordered_set>
 #include "rtp_llm/cpp/cache/block_tree_cache/block_pool/IBlockPool.h"
 #include "rtp_llm/cpp/cache/block_tree_cache/transfer/TransferTypes.h"
 
@@ -21,6 +22,18 @@ struct FrozenTask {
             })) return;
         blocks.push_back({std::move(pool), block});
         blocks.back().pool->freezeBlock(block);
+    }
+
+    bool readyToRelease(const std::unordered_set<std::string>& completed_ids) const {
+        return !finalFrozen && !recovery_task_ids.empty()
+            && std::all_of(recovery_task_ids.begin(), recovery_task_ids.end(),
+                           [&](const std::string& id) { return completed_ids.count(id) != 0; });
+    }
+    bool unfreeze(const std::unordered_set<std::string>& completed_ids) {
+        if (!readyToRelease(completed_ids)) return false;
+        for (const auto& block : blocks) block.pool->unfreezeBlock(block.block);
+        blocks.clear();
+        return true;
     }
 
     bool finalFrozen;
