@@ -163,6 +163,24 @@ TEST_F(BroadcastManagerTest, TransferQueryRoundTripAndTimeoutRetry) {
     }
 }
 
+TEST(BroadcastResultTest, RecoveryRequiresOnlyTimeoutFailures) {
+    using Result = BroadcastResult<FunctionRequestPB, FunctionResponsePB>;
+    for (bool cq_ok : {false, true}) {
+        for (auto code : {grpc::StatusCode::DEADLINE_EXCEEDED, grpc::StatusCode::UNAVAILABLE}) {
+            auto first = std::make_shared<Result::WorkerRpcContext>();
+            auto second = std::make_shared<Result::WorkerRpcContext>();
+            second->status = grpc::Status(code, "injected failure");
+            second->timeout_ms = 20;
+            Result result({first, second});
+            EXPECT_FALSE(result.onlyTimeoutFailures());
+            result.finishRank(0, true);
+            EXPECT_FALSE(result.onlyTimeoutFailures());
+            result.finishRank(1, cq_ok);
+            EXPECT_EQ(result.onlyTimeoutFailures(), cq_ok && code == grpc::StatusCode::DEADLINE_EXCEEDED);
+        }
+    }
+}
+
 // ---------------------------- init ----------------------------
 
 TEST_F(BroadcastManagerTest, Init_ReturnFalse_EmptyWorkerAddrs) {

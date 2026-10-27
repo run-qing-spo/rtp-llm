@@ -126,6 +126,13 @@ struct TransferResult {
 
     // Append every failure message; keep the first error code at equal priority.
     void merge(TransferResult other) {
+        const auto unknown = ErrorCode::TRANSFER_COMPLETION_UNKNOWN;
+        if ((status.code() == unknown && recovery_task_ids.empty())
+            || (other.status.code() == unknown && other.recovery_task_ids.empty())) {
+            recovery_task_ids.clear();
+        } else {
+            recovery_task_ids.insert(recovery_task_ids.end(), other.recovery_task_ids.begin(), other.recovery_task_ids.end());
+        }
         if (other.ok()) {
             return;
         }
@@ -156,6 +163,8 @@ struct TransferResult {
     ErrorInfo                   status{ErrorInfo::OkStatus()};
     CacheCopyError              copy_error{CacheCopyError::NONE};
     std::vector<CacheCopyError> block_errors;
+    // Empty on UNKNOWN means unrecoverable; otherwise query every listed execution.
+    std::vector<std::string> recovery_task_ids;
 };
 
 struct DeviceHostCopyOptions {
