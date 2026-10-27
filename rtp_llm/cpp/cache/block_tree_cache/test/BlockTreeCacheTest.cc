@@ -306,6 +306,58 @@ TEST_F(BlockTreeCacheTest, FrozenTaskReleasesOnlyAfterAllExecutionsFinish) {
     pool->decTreeRef(first, BlockTreeRefType::LOAD);
 }
 
+TEST_F(BlockTreeCacheTest, SharedFrozenBlockWaitsForEveryOwner) {
+    auto pool = makeStructuralDevicePool(0);
+    const auto block = pool->malloc().value();
+    const auto free_before = pool->freeBlocksNum();
+    TransferResult result(ErrorInfo(ErrorCode::TRANSFER_COMPLETION_UNKNOWN, "timeout"));
+    auto& dispatcher = *cache_->transfer_dispatcher_;
+    for (const auto* id : {"one", "two"}) {
+        result.recovery_task_ids = {id};
+        FrozenTask task(result);
+        task.freeze(pool, block);
+        task.freeze(pool, block);  // One hold per task, even for duplicate descriptors.
+        dispatcher.retainFrozenTask(std::move(task));
+    }
+    EXPECT_EQ(pool->treeRefCount(block), 2u);
+    EXPECT_EQ(pool->referencedBlocksNum(BlockTreeRefType::FROZEN), 1u);
+    dispatcher.releaseCompletedFrozenTasks({"one"});
+    EXPECT_TRUE(pool->isFrozen(block));
+    EXPECT_TRUE(pool->isAllocated(block));
+    EXPECT_EQ(pool->treeRefCount(block), 1u);
+    EXPECT_EQ(pool->freeBlocksNum(), free_before);
+    EXPECT_EQ(dispatcher.frozen_tasks_.size(), 1u);
+    dispatcher.releaseCompletedFrozenTasks({"two"});
+    EXPECT_FALSE(pool->isFrozen(block));
+    EXPECT_FALSE(pool->isAllocated(block));
+    EXPECT_EQ(pool->referencedBlocksNum(BlockTreeRefType::FROZEN), 0u);
+    EXPECT_EQ(pool->freeBlocksNum(), free_before + 1);
+    EXPECT_TRUE(dispatcher.frozen_tasks_.empty());
+    dispatcher.releaseCompletedFrozenTasks({"one", "two"});
+    EXPECT_EQ(pool->freeBlocksNum(), free_before + 1);
+}
+
+TEST_F(BlockTreeCacheTest, SharedPermanentFreezeSurvivesRecoverableOwner) {
+    auto pool = makeStructuralDevicePool(0);
+    const auto block = pool->malloc().value();
+    TransferResult result(ErrorInfo(ErrorCode::TRANSFER_COMPLETION_UNKNOWN, "timeout"));
+    FrozenTask permanent(result);
+    permanent.freeze(pool, block);
+    result.recovery_task_ids = {"one"};
+    FrozenTask recoverable(result);
+    recoverable.freeze(pool, block);
+    auto& dispatcher = *cache_->transfer_dispatcher_;
+    dispatcher.retainFrozenTask(std::move(permanent));
+    dispatcher.retainFrozenTask(std::move(recoverable));
+    dispatcher.releaseCompletedFrozenTasks({"one"});
+    EXPECT_TRUE(pool->isFrozen(block));
+    EXPECT_TRUE(pool->isAllocated(block));
+    EXPECT_EQ(pool->treeRefCount(block), 1u);
+    EXPECT_EQ(pool->referencedBlocksNum(BlockTreeRefType::FROZEN), 1u);
+    ASSERT_EQ(dispatcher.frozen_tasks_.size(), 1u);
+    EXPECT_TRUE(dispatcher.frozen_tasks_.front().finalFrozen);
+}
+
 TEST_F(BlockTreeCacheTest, FrozenTaskRetainsRecoveryIdsAndUniqueSlots) {
     TransferResult result(ErrorInfo(ErrorCode::TRANSFER_COMPLETION_UNKNOWN, "timeout"));
     EXPECT_TRUE(FrozenTask(result).finalFrozen);

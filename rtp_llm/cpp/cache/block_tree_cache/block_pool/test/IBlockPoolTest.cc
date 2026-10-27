@@ -280,7 +280,7 @@ TEST(IBlockPoolTest, MultipleTreeRefsReleaseOnlyAtLastHolder) {
     EXPECT_EQ(pool->referencedBlocksNum(BlockTreeRefType::LOAD), 0u);
 }
 
-TEST(IBlockPoolTest, FreezeDeduplicatesOperationsAndSurvivesOrdinaryReferenceRelease) {
+TEST(IBlockPoolTest, FreezeCountsOwnersAndSurvivesOrdinaryReferenceRelease) {
     auto pool   = makeInitializedPool(/*physical_block_count=*/4);
     auto blocks = pool->malloc(2);
     ASSERT_TRUE(blocks.has_value());
@@ -293,7 +293,7 @@ TEST(IBlockPoolTest, FreezeDeduplicatesOperationsAndSurvivesOrdinaryReferenceRel
 
     EXPECT_EQ(pool->referencedBlocksNum(BlockTreeRefType::FROZEN), 0u);
     EXPECT_FALSE(pool->isFrozen(load_block));
-    // Freezing needs no operation reference and concurrent calls share one hold.
+    // Freezing needs no operation reference and each concurrent call acquires its own hold.
     std::vector<std::thread> threads;
     for (size_t i = 0; i < 8; ++i) {
         threads.emplace_back([&] { pool->freezeBlock(load_block); });
@@ -309,8 +309,8 @@ TEST(IBlockPoolTest, FreezeDeduplicatesOperationsAndSurvivesOrdinaryReferenceRel
     EXPECT_EQ(pool->referencedBlocksNum(BlockTreeRefType::FROZEN), 2u);
     EXPECT_TRUE(pool->isFrozen(load_block));
     EXPECT_TRUE(pool->isFrozen(eviction_block));
-    EXPECT_EQ(pool->treeRefCount(load_block), 3u);
-    EXPECT_EQ(pool->treeRefCount(eviction_block), 3u);
+    EXPECT_EQ(pool->treeRefCount(load_block), 12u);
+    EXPECT_EQ(pool->treeRefCount(eviction_block), 4u);
 
     // A successful peer Task releases only its own ordinary reference.
     pool->incTreeRef(load_block, BlockTreeRefType::LOAD);
@@ -318,8 +318,8 @@ TEST(IBlockPoolTest, FreezeDeduplicatesOperationsAndSurvivesOrdinaryReferenceRel
     pool->decTreeRef(load_block, BlockTreeRefType::LOAD);
     pool->decTreeRef(eviction_block, BlockTreeRefType::EVICTION);
     pool->decTreeRef(*blocks, BlockTreeRefType::CACHE);
-    EXPECT_EQ(pool->treeRefCount(load_block), 1u);
-    EXPECT_EQ(pool->treeRefCount(eviction_block), 1u);
+    EXPECT_EQ(pool->treeRefCount(load_block), 10u);
+    EXPECT_EQ(pool->treeRefCount(eviction_block), 2u);
     EXPECT_EQ(pool->referencedBlocksNum(BlockTreeRefType::CACHE), 0u);
     EXPECT_EQ(pool->referencedBlocksNum(BlockTreeRefType::LOAD), 0u);
     EXPECT_EQ(pool->referencedBlocksNum(BlockTreeRefType::EVICTION), 0u);
