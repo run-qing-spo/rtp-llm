@@ -136,7 +136,7 @@ void BlockTreeCache::shutdownLoads() {
 TransferResult BlockTreeCache::executeTransfer(TransferTask task) {
     const auto task_id = task.taskId();
     if (!task_id.empty() && !transfer_task_registry_.start(task_id)) {
-        return ErrorInfo(ErrorCode::TRANSFER_COMPLETION_UNKNOWN, "duplicate transfer task id");
+        return ErrorInfo(ErrorCode::INVALID_PARAMS, "duplicate transfer task id");
     }
     auto context = transfer_dispatcher_->executePerRank(std::move(task));
     context->waitDone();
