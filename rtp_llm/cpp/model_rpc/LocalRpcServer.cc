@@ -1168,6 +1168,17 @@ void LocalRpcServer::reportCacheStatusTime(int64_t request_begin_time_us) {
     }
 }
 
+::grpc::Status LocalRpcServer::ForgetTransferTasks(::grpc::ServerContext* context,
+                                                  const ForgetTransferTasksRequestPB* request, EmptyPB*) {
+    if (context->IsCancelled()) return {grpc::StatusCode::CANCELLED, "request cancelled"};
+    auto manager = engine_ ? engine_->getCacheManager() : nullptr;
+    if (!manager) return {grpc::StatusCode::UNAVAILABLE, "cache manager unavailable"};
+    if (!manager->blockTreeCache()) return {grpc::StatusCode::UNIMPLEMENTED, "transfer cleanup unavailable"};
+    if (!manager->forgetTransferTasks(*request))
+        return {grpc::StatusCode::FAILED_PRECONDITION, "transfer completion not confirmed"};
+    return grpc::Status::OK;
+}
+
 ::grpc::Status LocalRpcServer::QueryTransferTasks(::grpc::ServerContext* context,
                                                  const QueryTransferTasksRequestPB* request,
                                                  QueryTransferTasksResponsePB* response) {

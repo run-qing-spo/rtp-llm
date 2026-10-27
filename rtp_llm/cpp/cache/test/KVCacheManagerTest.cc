@@ -409,6 +409,25 @@ TEST_F(KVCacheManagerTest, TaggedAddressLookupIgnoresGroupOrderAndPreservesLayer
     }
 }
 
+TEST_F(KVCacheManagerTest, ForgetTransferTasksSupportsPartialCleanupAndRetry) {
+    KVCacheManager manager(makeSimpleMhaCacheConfig(1, 4, 2, DataType::TYPE_INT8), false);
+    ASSERT_TRUE(manager.init());
+    ASSERT_NE(manager.blockTreeCache(), nullptr);
+    auto& registry = manager.blockTreeCache()->transfer_task_registry_;
+    ASSERT_TRUE(registry.start("running"));
+    ASSERT_TRUE(registry.start("finished"));
+    ASSERT_TRUE(registry.finish("finished"));
+    ForgetTransferTasksRequestPB request;
+    for (const auto* id : {"running", "finished", "missing", "finished"}) request.add_task_ids(id);
+    EXPECT_FALSE(manager.forgetTransferTasks(request));
+    EXPECT_EQ(registry.query("running"), TransferTaskRegistry::State::RUNNING);
+    EXPECT_EQ(registry.query("finished"), TransferTaskRegistry::State::NOT_FOUND);
+    ASSERT_TRUE(registry.finish("running"));
+    EXPECT_TRUE(manager.forgetTransferTasks(request));
+    EXPECT_TRUE(manager.forgetTransferTasks(request));
+    EXPECT_EQ(registry.query("running"), TransferTaskRegistry::State::NOT_FOUND);
+}
+
 TEST_F(KVCacheManagerTest, QueryTransferTasksReturnsMixedStates) {
     KVCacheManager manager(makeSimpleMhaCacheConfig(1, 4, 2, DataType::TYPE_INT8), false);
     ASSERT_TRUE(manager.init());
