@@ -165,6 +165,7 @@ cc_library(
     deps = [
         "//rtp_llm/cpp/cache/events:kv_cache_event",
         ":block_tree_task_pool",
+        ":transfer_task_registry",
         ":crc_dump_writer",
         ":device_block_pool",
         "//rtp_llm/cpp/cache:batch_kv_cache_resource",

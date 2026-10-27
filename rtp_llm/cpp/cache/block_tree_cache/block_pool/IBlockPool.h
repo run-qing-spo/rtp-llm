@@ -63,7 +63,8 @@ public:
     void     decTreeRef(const BlockIdList& blocks, BlockTreeRefType ref_type);
     uint32_t treeRefCount(BlockIdxType block) const;
 
-    // Keep one tree reference until the owner confirms all block access has stopped.
+    // Each owner acquires one frozen reference and releases it after its block access stops.
+    // Callers must deduplicate blocks within one owner; permanent owners never unfreeze.
     void freezeBlock(BlockIdxType block) noexcept;
     void unfreezeBlock(BlockIdxType block);
     bool isFrozen(BlockIdxType block) const;

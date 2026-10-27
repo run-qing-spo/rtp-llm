@@ -24,6 +24,16 @@ public:
         return true;
     }
 
+    // Idempotent: a lost cleanup reply can be retried, but running work is retained.
+    bool forget(const std::string& task_id) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        auto it = tasks_.find(task_id);
+        if (it == tasks_.end()) return true;
+        if (it->second != State::FINISHED) return false;
+        tasks_.erase(it);
+        return true;
+    }
+
     State query(const std::string& task_id) const {
         std::lock_guard<std::mutex> lock(mutex_);
         const auto it = tasks_.find(task_id);

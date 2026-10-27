@@ -712,6 +712,11 @@ service EmbeddingRpcService {
     rpc health(EmbeddingHealthRequestPB) returns (EmptyPB);
 }
 
+// Coordinator sends this only after it no longer needs completion evidence.
+message ForgetTransferTasksRequestPB {
+    repeated string task_ids = 1;
+}
+
 // Read-only query of worker-local memory transfer execution records.
 message QueryTransferTasksRequestPB {
     repeated string task_ids = 1;
@@ -1032,6 +1037,7 @@ service RpcService {
     rpc RemoteStore(RemoteStoreRequestPB) returns (RemoteStoreResponsePB);
 
     rpc ExecuteFunction(FunctionRequestPB) returns (FunctionResponsePB);
+    rpc ForgetTransferTasks(ForgetTransferTasksRequestPB) returns (EmptyPB);
     rpc QueryTransferTasks(QueryTransferTasksRequestPB) returns (QueryTransferTasksResponsePB);
     rpc QueryKVCMOperations(QueryKVCMOperationsRequestPB) returns (QueryKVCMOperationsResponsePB);
     rpc StartLoad(P2PConnectorStartLoadRequestPB) returns (P2PConnectorStartLoadResponsePB);
