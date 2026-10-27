@@ -140,8 +140,12 @@ TransferResult BlockTreeCache::executeTransfer(TransferTask task) {
     }
     auto context = transfer_dispatcher_->executePerRank(std::move(task));
     context->waitDone();
-    transfer_task_registry_.finish(task_id);
     auto result = context->result();
+    // Conservatively permit recovery only after a successful worker transfer.
+    // Failed transfers remain RUNNING, even when some failure paths are quiescent.
+    if (result.ok()) {
+        transfer_task_registry_.finish(task_id);
+    }
     if (!result.ok()) {
         RTP_LLM_LOG_WARNING("per-rank block transfer failed: %s", result.status.ToString().c_str());
     }
