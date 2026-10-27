@@ -11,6 +11,7 @@
 #include <stdexcept>
 #include <thread>
 #include <utility>
+#include <vector>
 
 #include "kmonitor/client/MetricsReporter.h"
 #include "kmonitor/client/core/MetricsData.h"
@@ -382,7 +383,7 @@ TEST_F(BlockTreeCacheTest, FrozenTaskRetainsRecoveryIdsAndUniqueSlots) {
 TEST_F(BlockTreeCacheTest, RecordsOnlyConfirmedTransferCompletion) {
     class Engine final: public PerRankBlockTransferEngine {
     public:
-        Engine(): PerRankBlockTransferEngine({}) {}
+        Engine(): PerRankBlockTransferEngine(std::vector<GroupSetPtr>{}) {}
         std::shared_ptr<TransferAsyncContext> execute(TransferTask) override {
             entered.set_value();
             return context;

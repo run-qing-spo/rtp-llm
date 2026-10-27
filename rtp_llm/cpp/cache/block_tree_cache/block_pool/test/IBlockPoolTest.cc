@@ -71,7 +71,9 @@ TEST(IBlockPoolTest, UnfreezePreservesOtherReferencesAndCapacity) {
         EXPECT_EQ(pool->referencedBlocksNum(BlockTreeRefType::FROZEN), 0u);
         const bool freed = remaining == BlockTreeRefType::FROZEN;
         const bool active = remaining == BlockTreeRefType::LOAD;
-        if (!freed) EXPECT_EQ(pool->treeRefCount(block), 1u);
+        if (!freed) {
+            EXPECT_EQ(pool->treeRefCount(block), 1u);
+        }
         EXPECT_EQ(pool->isAllocated(block), !freed);
         EXPECT_EQ(pool->freeBlocksNum(), freed ? 3u : 2u);
         EXPECT_EQ(pool->availableBlocksNum(), active ? 2u : 3u);
