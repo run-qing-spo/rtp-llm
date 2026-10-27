@@ -63,8 +63,9 @@ public:
     void     decTreeRef(const BlockIdList& blocks, BlockTreeRefType ref_type);
     uint32_t treeRefCount(BlockIdxType block) const;
 
-    // Keep one permanent tree reference per physical block for this pool's lifetime.
+    // Keep one tree reference until the owner confirms all block access has stopped.
     void freezeBlock(BlockIdxType block) noexcept;
+    void unfreezeBlock(BlockIdxType block);
     bool isFrozen(BlockIdxType block) const;
 
     // Number of distinct blocks carrying at least one tree reference of this type.
