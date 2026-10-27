@@ -20,6 +20,24 @@
 namespace rtp_llm {
 namespace {
 
+TEST(BlockTransferDispatcherTest, CleanupRetriesSnapshotWithoutDroppingNewIds) {
+    MultiRankBlockTransferEngine engine({}, nullptr);
+    engine.pending_cleanup_->ids.insert("done");
+    engine.retryCleanupWith([](const auto&) { return false; });
+    EXPECT_EQ(engine.pending_cleanup_->ids.count("done"), 1u);
+    EXPECT_THROW(engine.retryCleanupWith([](const auto&) -> bool { throw std::runtime_error("rpc"); }),
+                 std::runtime_error);
+    engine.retryCleanupWith([&](const auto& ids) {
+        EXPECT_EQ(ids, std::vector<std::string>{"done"});
+        std::lock_guard<std::mutex> lock(engine.pending_cleanup_->mutex);
+        engine.pending_cleanup_->ids.insert("new");
+        return true;
+    });
+    EXPECT_EQ(engine.pending_cleanup_->ids, (std::unordered_set<std::string>{"new"}));
+    engine.retryCleanupWith([](const auto&) { return true; });
+    engine.retryCleanupWith([](const auto&) { ADD_FAILURE(); return true; });
+}
+
 TEST(BlockTransferDispatcherTest, StopWakesSleepingPollerAndJoinsBeforeDestruction) {
     auto multi = std::make_shared<MultiRankBlockTransferEngine>(std::vector<GroupSetPtr>{}, nullptr);
     BlockTransferDispatcher dispatcher(nullptr, multi);

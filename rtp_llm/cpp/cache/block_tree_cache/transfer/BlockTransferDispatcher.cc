@@ -30,6 +30,7 @@ BlockTransferDispatcher::BlockTransferDispatcher(std::shared_ptr<PerRankBlockTra
             while (!frozen_stop_cv_.wait_for(lock, std::chrono::seconds(1), [this] { return frozen_stopping_; })) {
                 lock.unlock();
                 try {
+                    multi_rank_engine_->retryPendingCleanup();
                     pollFrozenTasks();
                 } catch (const std::exception& error) {
                     RTP_LLM_LOG_WARNING("frozen task polling failed: %s", error.what());

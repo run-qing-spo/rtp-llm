@@ -160,6 +160,29 @@ MultiRankBlockTransferEngine::MultiRankBlockTransferEngine(std::vector<GroupSetP
                                                            std::shared_ptr<BroadcastManager> broadcast_manager):
     group_sets_(std::move(group_sets)), broadcast_manager_(std::move(broadcast_manager)) {}
 
+void MultiRankBlockTransferEngine::retryCleanupWith(
+    const std::function<bool(const std::vector<std::string>&)>& cleanup) const {
+    std::vector<std::string> ids;
+    {
+        std::lock_guard<std::mutex> lock(pending_cleanup_->mutex);
+        ids.assign(pending_cleanup_->ids.begin(), pending_cleanup_->ids.end());
+    }
+    if (ids.empty() || !cleanup(ids)) return;  // Keep the snapshot on RPC failure or exception.
+    std::lock_guard<std::mutex> lock(pending_cleanup_->mutex);
+    for (const auto& id : ids) pending_cleanup_->ids.erase(id);
+}
+
+void MultiRankBlockTransferEngine::retryPendingCleanup() const {
+    if (!broadcast_manager_ || broadcast_manager_->workerNum() == 0) return;
+    retryCleanupWith([this](const auto& ids) {
+        ForgetTransferTasksRequestPB request;
+        for (const auto& id : ids) request.add_task_ids(id);
+        auto result = broadcast_manager_->forgetTransferTasks(
+            std::vector<ForgetTransferTasksRequestPB>(broadcast_manager_->workerNum(), request));
+        return result && result->waitForCompletion().ok();
+    });
+}
+
 std::vector<TaskCompletion> MultiRankBlockTransferEngine::queryTasks(
     const std::vector<std::string>& ids, int timeout_ms) const {
     std::vector<TaskCompletion> states(ids.size(), TaskCompletion::UNKNOWN);
@@ -223,7 +246,15 @@ std::shared_ptr<TransferAsyncContext> MultiRankBlockTransferEngine::execute(Tran
                            CacheCopyError::RPC_FAILED),
             block_count);
     }
-    return MultiRankTransferAsyncContext::create(std::move(broadcast_result), worker_count, block_count, request.task_id());
+    auto context = MultiRankTransferAsyncContext::create(
+        std::move(broadcast_result), worker_count, block_count, request.task_id());
+    context->onDone([pending = pending_cleanup_, id = request.task_id(), worker_count](TransferResult result) {
+        if (worker_count == 0 || result.status.code() == ErrorCode::TRANSFER_COMPLETION_UNKNOWN) return;
+        // All ranks have stopped; enqueue only, never wait for another RPC on the completion thread.
+        std::lock_guard<std::mutex> lock(pending->mutex);
+        pending->ids.insert(id);
+    });
+    return context;
 }
 
 }  // namespace rtp_llm
