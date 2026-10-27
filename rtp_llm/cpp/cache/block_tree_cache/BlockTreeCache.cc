@@ -140,12 +140,8 @@ TransferResult BlockTreeCache::executeTransfer(TransferTask task) {
     }
     auto context = transfer_dispatcher_->executePerRank(std::move(task));
     context->waitDone();
+    transfer_task_registry_.finish(task_id);
     auto result = context->result();
-    // Context readiness alone does not prove quiescence after a device/unknown exception.
-    const auto code = result.status.code();
-    if (result.ok() || code == ErrorCode::INVALID_PARAMS || code == ErrorCode::DEADLINE_EXCEEDED) {
-        transfer_task_registry_.finish(task_id);
-    }
     if (!result.ok()) {
         RTP_LLM_LOG_WARNING("per-rank block transfer failed: %s", result.status.ToString().c_str());
     }
