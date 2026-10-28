@@ -1261,7 +1261,7 @@ TEST(StorageBackendTest, UnknownReadFreezesBeforeCallbackEvenWhenOwnerReleasedAn
     backend.shutdown();
 }
 
-TEST(StorageBackendTest, UnknownReadFreezesEveryPhysicalPinAndReusesExistingFrozenReference) {
+TEST(StorageBackendTest, UnknownReadFreezesEveryPhysicalPinAndPreservesExistingFrozenReference) {
     for (bool single_pool : {false, true}) {
         auto       first  = std::make_shared<TestBlockPool>();
         auto       second = single_pool ? first : std::make_shared<TestBlockPool>();
@@ -1297,7 +1297,7 @@ TEST(StorageBackendTest, UnknownReadFreezesEveryPhysicalPinAndReusesExistingFroz
         for (const auto& pool : {first, second}) {
             EXPECT_TRUE(pool->isFrozen(block));
             EXPECT_EQ(pool->refCount(block), 1u);
-            EXPECT_EQ(pool->treeRefCount(block), 1u);
+            EXPECT_EQ(pool->treeRefCount(block), pool == first ? 2u : 1u);
             EXPECT_EQ(pool->referencedBlocksNum(BlockTreeRefType::FROZEN), 1u);
             EXPECT_EQ(pool->referencedBlocksNum(BlockTreeRefType::STORE), 0u);
         }
