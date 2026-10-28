@@ -239,21 +239,24 @@ TEST_F(CoordinatorCacheManagerAtomicUpdateTest, UpdateKVBlockEmptyResourcesNeedN
 }
 
 TEST_F(CoordinatorCacheManagerAtomicUpdateTest, UpdateKVBlockDoesNotTransferExternallyReferencedTail) {
-    auto config = createSingleTypeTestConfig(/*layer_num=*/1, /*block_num=*/3, /*seq_size_per_block=*/4);
+    auto config = createSingleTypeTestConfig(/*layer_num=*/1, /*block_num=*/5, /*seq_size_per_block=*/4);
     allocator_  = std::make_shared<TestAllocator>(config, AllocationType::HOST);
     ASSERT_TRUE(allocator_->init());
     auto pool   = allocator_->groupBlockPools().front();
-    auto blocks = allocateRequestBlocks(pool, 2);
-    ASSERT_EQ(blocks.size(), 2u);
+    auto blocks = allocateRequestBlocks(pool, 4);
+    ASSERT_EQ(blocks.size(), 4u);
     auto resource = createBatchKVCacheResource(/*batch_size=*/2, config);
     resource->setBatchBlocks(0, "default", {blocks[0]});
     resource->setBatchBlocks(1, "default", {blocks[1]});
+    // Keep two extra request holds so the four-block usable pool remains full.
 
     // Being unique within this batch does not imply exclusive ownership in the
     // pool. Another request or any tree reference may still hold the tail.
     for (int owner = 0; owner <= static_cast<int>(BlockTreeRefType::COUNT); ++owner) {
         if (owner == 0) {
             pool->incRef(blocks[1]);
+        } else if (owner == static_cast<int>(BlockTreeRefType::FROZEN) + 1) {
+            pool->freezeBlock(blocks[1]);
         } else {
             pool->incTreeRef(blocks[1], static_cast<BlockTreeRefType>(owner - 1));
         }
@@ -267,6 +270,8 @@ TEST_F(CoordinatorCacheManagerAtomicUpdateTest, UpdateKVBlockDoesNotTransferExte
 
         if (owner == 0) {
             pool->decRef(blocks[1]);
+        } else if (owner == static_cast<int>(BlockTreeRefType::FROZEN) + 1) {
+            pool->unfreezeBlock(blocks[1]);
         } else {
             pool->decTreeRef(blocks[1], static_cast<BlockTreeRefType>(owner - 1));
         }
@@ -274,6 +279,8 @@ TEST_F(CoordinatorCacheManagerAtomicUpdateTest, UpdateKVBlockDoesNotTransferExte
 
     allocator_->free(FreeInfo{resource, nullptr});
     EXPECT_EQ(pool->freeBlocksNum(), 2u);
+    pool->decRef(BlockIndicesType{blocks[2], blocks[3]});
+    EXPECT_EQ(pool->freeBlocksNum(), 4u);
 }
 
 TEST_F(CoordinatorCacheManagerAtomicUpdateTest, TransfersTailSharedOnlyByDroppedBeams) {
