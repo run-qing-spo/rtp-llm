@@ -68,6 +68,7 @@ TEST(IBlockPoolTest, UnfreezePreservesCacheAndReleasesOrphans) {
             EXPECT_GT(pool->availableBlocksNum(), 2u);  // Also verifies callback runs outside the pool lock.
         });
         EXPECT_EQ(pool->availableBlocksNum(), 2u);
+        EXPECT_EQ(pool->unfrozenBlocksNum(), 0u);
         pool->unfreezeBlock(block);
         const bool preserved = remaining == BlockTreeRefType::CACHE;
         if (preserved) {
@@ -75,6 +76,7 @@ TEST(IBlockPoolTest, UnfreezePreservesCacheAndReleasesOrphans) {
             EXPECT_EQ(pool->treeRefCount(block), 1u);
         }
         EXPECT_EQ(pool->referencedBlocksNum(BlockTreeRefType::FROZEN), 0u);
+        EXPECT_EQ(pool->unfrozenBlocksNum(), 1u);
         EXPECT_EQ(pool->isAllocated(block), preserved);
         EXPECT_EQ(pool->freeBlocksNum(), preserved ? 2u : 3u);
         EXPECT_EQ(pool->availableBlocksNum(), 3u);
@@ -87,6 +89,26 @@ TEST(IBlockPoolTest, UnfreezePreservesCacheAndReleasesOrphans) {
         EXPECT_EQ(pool->first_tree_edges, 1u);
         EXPECT_EQ(pool->last_tree_edges, 1u);
     }
+}
+
+TEST(IBlockPoolTest, UnfrozenBlocksNumCountsFinalFrozenReferenceRelease) {
+    auto       pool  = makeInitializedPool(4);
+    const auto block = pool->malloc().value();
+    pool->incTreeRef(block, BlockTreeRefType::CACHE);
+    pool->freezeBlock(block);
+    pool->freezeBlock(block);
+
+    pool->unfreezeBlock(block);
+    EXPECT_TRUE(pool->isFrozen(block));
+    EXPECT_EQ(pool->unfrozenBlocksNum(), 0u);
+
+    pool->unfreezeBlock(block);
+    EXPECT_FALSE(pool->isFrozen(block));
+    EXPECT_EQ(pool->unfrozenBlocksNum(), 1u);
+
+    pool->freezeBlock(block);
+    pool->unfreezeBlock(block);
+    EXPECT_EQ(pool->unfrozenBlocksNum(), 2u);
 }
 
 TEST(IBlockPoolTest, DeviceFreezeOverThirtyPercentIsFatal) {
