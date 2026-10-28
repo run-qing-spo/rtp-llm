@@ -54,7 +54,7 @@ std::shared_ptr<TestPool> makeInitializedPool(size_t physical_block_count) {
 
 }  // namespace
 
-TEST(IBlockPoolTest, UnfreezePreservesOtherReferencesAndCapacity) {
+TEST(IBlockPoolTest, UnfreezePreservesCacheAndReleasesOrphans) {
     for (auto remaining : {BlockTreeRefType::CACHE, BlockTreeRefType::LOAD, BlockTreeRefType::FROZEN}) {
         auto pool = makeInitializedPool(4);
         const auto block = pool->malloc().value();
@@ -67,19 +67,18 @@ TEST(IBlockPoolTest, UnfreezePreservesOtherReferencesAndCapacity) {
         });
         EXPECT_EQ(pool->availableBlocksNum(), 2u);
         pool->unfreezeBlock(block);
-        EXPECT_FALSE(pool->isFrozen(block));
-        EXPECT_EQ(pool->referencedBlocksNum(BlockTreeRefType::FROZEN), 0u);
-        const bool freed = remaining == BlockTreeRefType::FROZEN;
-        const bool active = remaining == BlockTreeRefType::LOAD;
-        if (!freed) {
+        const bool preserved = remaining == BlockTreeRefType::CACHE;
+        if (preserved) {
+            EXPECT_FALSE(pool->isFrozen(block));
             EXPECT_EQ(pool->treeRefCount(block), 1u);
         }
-        EXPECT_EQ(pool->isAllocated(block), !freed);
-        EXPECT_EQ(pool->freeBlocksNum(), freed ? 3u : 2u);
-        EXPECT_EQ(pool->availableBlocksNum(), active ? 2u : 3u);
-        EXPECT_EQ(pool->activeBlocksNum(), active ? 1u : 0u);
-        EXPECT_EQ(notifications, active ? 0u : 1u);
-        if (!freed) pool->decTreeRef(block, remaining);
+        EXPECT_EQ(pool->referencedBlocksNum(BlockTreeRefType::FROZEN), 0u);
+        EXPECT_EQ(pool->isAllocated(block), preserved);
+        EXPECT_EQ(pool->freeBlocksNum(), preserved ? 2u : 3u);
+        EXPECT_EQ(pool->availableBlocksNum(), 3u);
+        EXPECT_EQ(pool->activeBlocksNum(), 0u);
+        EXPECT_EQ(notifications, 1u);
+        if (preserved) pool->decTreeRef(block, remaining);
         EXPECT_EQ(pool->freeBlocksNum(), 3u);
         EXPECT_EQ(pool->availableBlocksNum(), 3u);
         EXPECT_EQ(pool->activeBlocksNum(), 0u);

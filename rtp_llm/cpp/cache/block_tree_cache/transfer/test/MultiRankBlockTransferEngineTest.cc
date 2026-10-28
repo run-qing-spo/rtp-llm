@@ -338,7 +338,7 @@ TEST_F(MultiRankBlockTransferEngineTest, DeadlineThenWorkerCompletionReleasesFro
     ASSERT_EQ(result.recovery_task_ids.size(), 1u);
     const auto id = result.recovery_task_ids.front();
     auto pool = makeStructuralDevicePool(0);
-    const auto block = pool->malloc().value();
+    const BlockIdxType block = 1;
     FrozenTask task(result);
     task.freeze(pool, block);
     dispatcher.retainFrozenTask(std::move(task));

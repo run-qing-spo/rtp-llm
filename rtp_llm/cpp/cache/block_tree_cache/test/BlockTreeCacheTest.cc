@@ -244,7 +244,7 @@ protected:
 TEST_F(BlockTreeCacheTest, FrozenPollingUsesSnapshotAndKeepsUnknownTasks) {
     auto& dispatcher = *cache_->transfer_dispatcher_;
     auto pool = makeStructuralDevicePool(0);
-    const auto first = pool->malloc().value(), second = pool->malloc().value();
+    const BlockIdxType first = 1, second = 2;
     TransferResult result(ErrorInfo(ErrorCode::TRANSFER_COMPLETION_UNKNOWN, "timeout"));
     result.recovery_task_ids = {"first"};
     FrozenTask initial(result);
@@ -277,8 +277,8 @@ TEST_F(BlockTreeCacheTest, FrozenPollingUsesSnapshotAndKeepsUnknownTasks) {
 
 TEST_F(BlockTreeCacheTest, FrozenTaskReleasesOnlyAfterAllExecutionsFinish) {
     auto pool = makeStructuralDevicePool(0);
-    const auto first = pool->malloc().value(), second = pool->malloc().value(), permanent = pool->malloc().value();
-    pool->incTreeRef(first, BlockTreeRefType::LOAD);
+    const BlockIdxType first = 1, second = 2, permanent = 3;
+    pool->incTreeRef(first, BlockTreeRefType::CACHE);
     TransferResult result(ErrorInfo(ErrorCode::TRANSFER_COMPLETION_UNKNOWN, "timeout"));
     FrozenTask final_task(result);
     final_task.freeze(pool, permanent);
@@ -304,13 +304,14 @@ TEST_F(BlockTreeCacheTest, FrozenTaskReleasesOnlyAfterAllExecutionsFinish) {
     EXPECT_EQ(dispatcher.frozen_tasks_.size(), 1u);
     dispatcher.releaseCompletedFrozenTasks({"one", "two"});
     EXPECT_EQ(pool->freeBlocksNum(), free_before + 1);
-    pool->decTreeRef(first, BlockTreeRefType::LOAD);
+    pool->decTreeRef(first, BlockTreeRefType::CACHE);
 }
 
 TEST_F(BlockTreeCacheTest, SharedFrozenBlockWaitsForEveryOwner) {
     auto pool = makeStructuralDevicePool(0);
-    const auto block = pool->malloc().value();
+    const BlockIdxType block = 1;
     const auto free_before = pool->freeBlocksNum();
+    pool->incTreeRef(block, BlockTreeRefType::CACHE);
     TransferResult result(ErrorInfo(ErrorCode::TRANSFER_COMPLETION_UNKNOWN, "timeout"));
     auto& dispatcher = *cache_->transfer_dispatcher_;
     for (const auto* id : {"one", "two"}) {
@@ -320,27 +321,32 @@ TEST_F(BlockTreeCacheTest, SharedFrozenBlockWaitsForEveryOwner) {
         task.freeze(pool, block);  // One hold per task, even for duplicate descriptors.
         dispatcher.retainFrozenTask(std::move(task));
     }
-    EXPECT_EQ(pool->treeRefCount(block), 2u);
+    EXPECT_EQ(pool->treeRefCount(block), 3u);
     EXPECT_EQ(pool->referencedBlocksNum(BlockTreeRefType::FROZEN), 1u);
     dispatcher.releaseCompletedFrozenTasks({"one"});
     EXPECT_TRUE(pool->isFrozen(block));
     EXPECT_TRUE(pool->isAllocated(block));
-    EXPECT_EQ(pool->treeRefCount(block), 1u);
+    EXPECT_EQ(pool->treeRefCount(block), 2u);
     EXPECT_EQ(pool->freeBlocksNum(), free_before);
     EXPECT_EQ(dispatcher.frozen_tasks_.size(), 1u);
     dispatcher.releaseCompletedFrozenTasks({"two"});
     EXPECT_FALSE(pool->isFrozen(block));
-    EXPECT_FALSE(pool->isAllocated(block));
+    EXPECT_TRUE(pool->isAllocated(block));
+    EXPECT_EQ(pool->treeRefCount(block), 1u);
     EXPECT_EQ(pool->referencedBlocksNum(BlockTreeRefType::FROZEN), 0u);
-    EXPECT_EQ(pool->freeBlocksNum(), free_before + 1);
+    EXPECT_EQ(pool->freeBlocksNum(), free_before);
     EXPECT_TRUE(dispatcher.frozen_tasks_.empty());
     dispatcher.releaseCompletedFrozenTasks({"one", "two"});
+    EXPECT_EQ(pool->freeBlocksNum(), free_before);
+    pool->decTreeRef(block, BlockTreeRefType::CACHE);
+    EXPECT_FALSE(pool->isAllocated(block));
     EXPECT_EQ(pool->freeBlocksNum(), free_before + 1);
 }
 
 TEST_F(BlockTreeCacheTest, SharedPermanentFreezeSurvivesRecoverableOwner) {
     auto pool = makeStructuralDevicePool(0);
-    const auto block = pool->malloc().value();
+    const BlockIdxType block = 1;
+    pool->incTreeRef(block, BlockTreeRefType::CACHE);
     TransferResult result(ErrorInfo(ErrorCode::TRANSFER_COMPLETION_UNKNOWN, "timeout"));
     FrozenTask permanent(result);
     permanent.freeze(pool, block);
@@ -353,7 +359,7 @@ TEST_F(BlockTreeCacheTest, SharedPermanentFreezeSurvivesRecoverableOwner) {
     dispatcher.releaseCompletedFrozenTasks({"one"});
     EXPECT_TRUE(pool->isFrozen(block));
     EXPECT_TRUE(pool->isAllocated(block));
-    EXPECT_EQ(pool->treeRefCount(block), 1u);
+    EXPECT_EQ(pool->treeRefCount(block), 2u);
     EXPECT_EQ(pool->referencedBlocksNum(BlockTreeRefType::FROZEN), 1u);
     ASSERT_EQ(dispatcher.frozen_tasks_.size(), 1u);
     EXPECT_TRUE(dispatcher.frozen_tasks_.front().finalFrozen);
@@ -366,18 +372,17 @@ TEST_F(BlockTreeCacheTest, FrozenTaskRetainsRecoveryIdsAndUniqueSlots) {
     FrozenTask frozen(result);
     EXPECT_FALSE(frozen.finalFrozen);
     auto pool = makeStructuralDevicePool(0);
-    auto block = pool->malloc();
-    ASSERT_TRUE(block.has_value());
-    frozen.freeze(pool, *block);
-    frozen.freeze(pool, *block);
-    EXPECT_TRUE(pool->isFrozen(*block));
+    const BlockIdxType block = 1;
+    frozen.freeze(pool, block);
+    frozen.freeze(pool, block);
+    EXPECT_TRUE(pool->isFrozen(block));
     ASSERT_EQ(frozen.blocks.size(), 1u);
     cache_->transfer_dispatcher_->retainFrozenTask(std::move(frozen));
     const auto& saved = cache_->transfer_dispatcher_->frozen_tasks_;
     ASSERT_EQ(saved.size(), 1u);
     EXPECT_EQ(saved[0].recovery_task_ids, result.recovery_task_ids);
     EXPECT_EQ(saved[0].blocks[0].pool.get(), pool.get());
-    EXPECT_EQ(saved[0].blocks[0].block, *block);
+    EXPECT_EQ(saved[0].blocks[0].block, block);
 }
 
 TEST_F(BlockTreeCacheTest, RecordsOnlyConfirmedTransferCompletion) {
@@ -407,7 +412,7 @@ TEST_F(BlockTreeCacheTest, RecordsOnlyConfirmedTransferCompletion) {
         engine->context->complete(i == 0 ? ErrorInfo::OkStatus() : ErrorInfo(codes[i], "test"));
         execution.get();
         ASSERT_EQ(ready, std::future_status::ready);
-        const auto expected = i < 3 ? State::FINISHED : State::RUNNING;
+        const auto expected = i == 0 ? State::FINISHED : State::RUNNING;
         EXPECT_EQ(cache_->queryTransferTask(id), expected);
         EXPECT_EQ(cache_->executeTransfer(TransferTask({}, std::chrono::seconds(30), id)).status.code(),
                   ErrorCode::INVALID_PARAMS);
