@@ -79,10 +79,10 @@ void answer(size_t rank, const FunctionRequestPB& request, FunctionResponsePB& r
     }
 }
 
-FrozenTask::ExecutionInfo execution(TransferExecutionTrace trace,
+TransferCompletionIdentity execution(TransferExecutionTrace trace,
                                     const std::vector<std::string>& addresses,
                                     bool remote = true) {
-    FrozenTask::ExecutionInfo info;
+    TransferCompletionIdentity info;
     info.trace_id = std::move(trace);
     info.remote = remote;
     info.expected_rank_count = addresses.size();
@@ -267,7 +267,7 @@ TEST(TransferCompletionQueryTest, ParticipantMismatchRejectsBeforeAnyRpcOrLocalF
     size_t local_calls = 0;
     TransferCompletionQuery query(manager, [&](const auto&) { ++local_calls; return State::BUFFER_SAFE; });
     const auto valid = execution(uint64_t{88}, {server.address()});
-    std::vector<FrozenTask::ExecutionInfo> invalid;
+    std::vector<TransferCompletionIdentity> invalid;
     invalid.push_back(execution(uint64_t{88}, {}));
     invalid.push_back(execution(uint64_t{88}, {server.address(), server.address()}));
     invalid.push_back(valid);

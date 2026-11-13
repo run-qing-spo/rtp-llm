@@ -92,7 +92,7 @@ TransferCompletionQuery::TransferCompletionQuery(std::shared_ptr<BroadcastManage
     broadcast_manager_(std::move(broadcast_manager)), local_reader_(std::move(local_reader)) {}
 
 TransferCompletionQueryResult
-TransferCompletionQuery::query(const FrozenTask::ExecutionInfo& execution, int timeout_ms) const {
+TransferCompletionQuery::query(const TransferCompletionIdentity& execution, int timeout_ms) const {
     TransferCompletionQueryResult result;
     result.trace_id = execution.trace_id;
     result.ranks.resize(execution.expected_rank_count);

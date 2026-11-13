@@ -871,7 +871,12 @@ TransferCompletionQueryResult KVCacheManager::queryTransferCompletion(const Froz
                                    [this](const TransferExecutionTrace& trace_id) {
                                        return localTransferCompletion(trace_id);
                                    })
-        .query(execution, timeout_ms);
+        .query({execution.trace_id,
+                execution.request_id,
+                execution.remote,
+                execution.expected_rank_count,
+                {execution.expected_peers.begin(), execution.expected_peers.end()}},
+               timeout_ms);
 }
 
 bool KVCacheManager::executeFunction(const FunctionRequestPB& request, FunctionResponsePB& response) {

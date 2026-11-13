@@ -3,7 +3,6 @@
 #include <functional>
 #include <memory>
 
-#include "rtp_llm/cpp/cache/block_tree_cache/transfer/FrozenTask.h"
 #include "rtp_llm/cpp/cache/block_tree_cache/transfer/TransferCompletionTypes.h"
 
 namespace rtp_llm {
@@ -23,7 +22,7 @@ public:
 
     // Positive timeout only. Missing participants, malformed responses and
     // transport errors never prove completion. Rows are indexed by original rank.
-    TransferCompletionQueryResult query(const FrozenTask::ExecutionInfo& execution, int timeout_ms) const;
+    TransferCompletionQueryResult query(const TransferCompletionIdentity& execution, int timeout_ms) const;
 
 private:
     std::shared_ptr<BroadcastManager> broadcast_manager_;
