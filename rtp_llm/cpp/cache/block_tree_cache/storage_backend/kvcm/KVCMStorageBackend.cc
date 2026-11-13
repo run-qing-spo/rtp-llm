@@ -1925,7 +1925,6 @@ public:
             completion_accounting_->stopSampling();
             completion_accounting_->reportSnapshot();
         }
-        // Upstream keeps uncertain source pages FROZEN until pool destruction.
     }
 
     bool protectsUnknownCompletion() const noexcept {
