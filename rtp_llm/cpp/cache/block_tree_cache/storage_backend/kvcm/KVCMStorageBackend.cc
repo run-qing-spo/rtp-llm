@@ -244,8 +244,6 @@ public:
 
     CoordinatedReadPtr prepareCoordinatedRead(const StorageRequest& request,
                                               const std::vector<FunctionRequestPB>& requests) {
-        if (decode_publication_enabled_)
-            return nullptr;
         FrozenTask::ExecutionInfo execution;
         execution.trace_id = requests.front().remote_request().trace_id();
         execution.operation = "read";
@@ -1135,6 +1133,12 @@ public:
         try {
             rethrowPayloadFailure(source_may_be_touched);
         } catch (const StorageOperationCompletionUnknown&) {
+            if (decode_publication_enabled_) {
+                // Protected payloads retain their worker resources on UNKNOWN.
+                // Preserve completion evidence while that protection is active.
+                finalize.dismiss();
+                throw;
+            }
             if (coordinated)
                 std::rethrow_exception(coordinated->freezeAndRetain(std::current_exception()));
             throw;
