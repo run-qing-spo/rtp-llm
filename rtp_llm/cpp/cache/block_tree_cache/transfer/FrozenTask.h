@@ -23,7 +23,7 @@ struct TransferCompletionQueryResult;
 // callback survives here, and destruction never releases frozen references.
 class FrozenTask {
 public:
-    struct ExpectedPeer {
+    struct TransferParticipant {
         size_t      rank{0};
         std::string address;
     };
@@ -55,7 +55,7 @@ public:
         uint64_t                    parent_trace_id{0};
         bool                        remote{false};
         size_t                      expected_rank_count{0};
-        std::vector<ExpectedPeer>   expected_peers;
+        std::vector<TransferParticipant> expected_peers;
         std::vector<DescriptorInfo> descriptors;
     };
 
@@ -113,11 +113,11 @@ public:
     FrozenTask& operator=(const FrozenTask&) = delete;
 
     // Idempotent, single-use lifecycle. freeze after RELEASED is a no-op.
-    // Concurrent unfreeze callers do not repeat decrements; RELEASING remains
+    // Concurrent completeRecovery callers do not repeat decrements; RELEASING remains
     // visible until the owner finishes. Notifications run without this mutex.
     // Only the caller completing FROZEN -> RELEASED returns true.
     void freeze() noexcept;
-    bool unfreeze() noexcept;
+    bool completeRecovery() noexcept;
 
     // Construct immutable query results before calling this method. Recording
     // does not change the original failure or release any target references.

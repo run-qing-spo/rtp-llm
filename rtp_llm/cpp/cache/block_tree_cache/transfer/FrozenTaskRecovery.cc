@@ -31,7 +31,7 @@ Proof validate(const FrozenTask::ExecutionInfo& execution, const TransferComplet
         return {false, false, nullptr};
     bool all_safe = true;
     for (size_t rank = 0; rank < count; ++rank) {
-        const FrozenTask::ExpectedPeer* peer = nullptr;
+        const FrozenTask::TransferParticipant* peer = nullptr;
         const TransferCompletionRankResult* row = nullptr;
         for (const auto& candidate : execution.expected_peers) {
             if (candidate.rank == rank) {
@@ -246,7 +246,7 @@ FrozenTaskRecovery::runOnce(int query_timeout_ms, const std::function<bool()>& s
         if (safe && task->snapshot().state == FrozenTask::State::FROZEN) {
             if (stop())
                 break;
-            if (task->unfreeze()) {
+            if (task->completeRecovery()) {
                 ++summary.released;
                 logReleased(*task);
             }

@@ -313,7 +313,7 @@ TEST(KVCMFrozenTaskTest, DistinctReadTracesOwnIndependentHoldsOnTheSameTarget) {
     const auto first_failure = records[0]->failure().status.ToString();
     EXPECT_NE(std::get<std::string>(records[0]->execution().trace_id),
               std::get<std::string>(records[1]->execution().trace_id));
-    records[0]->unfreeze();
+    records[0]->completeRecovery();
     EXPECT_EQ(records[0]->snapshot().state, FrozenState::RELEASED);
     EXPECT_EQ(records[1]->snapshot().state, FrozenState::FROZEN);
     EXPECT_EQ(environment.device_pool->refCount(environment.block_id), before + 1);
@@ -327,10 +327,10 @@ TEST(KVCMFrozenTaskTest, DistinctReadTracesOwnIndependentHoldsOnTheSameTarget) {
     }
     // Removing table ownership does not invalidate an earlier observer's snapshot.
     EXPECT_EQ(records[0]->failure().status.ToString(), first_failure);
-    records[0]->unfreeze();
+    records[0]->completeRecovery();
     EXPECT_EQ(environment.device_pool->refCount(environment.block_id), before + 1);
     EXPECT_EQ(environment.device_pool->treeRefCount(environment.block_id), 1u);
-    records[1]->unfreeze();
+    records[1]->completeRecovery();
     EXPECT_EQ(environment.device_pool->refCount(environment.block_id), before);
     EXPECT_EQ(environment.device_pool->treeRefCount(environment.block_id), 0u);
     EXPECT_FALSE(environment.device_pool->isFrozen(environment.block_id));
@@ -373,12 +373,12 @@ TEST(KVCMFrozenTaskTest, EnumerationKeepsReleasingRecordUntilCapacityNotificatio
     auto record = records.front();
     const std::weak_ptr<FrozenTask> observed = record;
     records.clear();
-    // Leave only the frozen hold so unfreeze actually grows pool capacity.
+    // Leave only the frozen hold so recovery completion grows pool capacity.
     environment->device_pool->decRef(environment->block_id);
     BoundedThread<bool> releasing([record, environment, backend] {
         (void)environment;
         (void)backend;
-        return record->unfreeze();
+        return record->completeRecovery();
     });
     ASSERT_EQ(entered_future.wait_for(5s), std::future_status::ready);
     EXPECT_EQ(record->snapshot().state, FrozenState::RELEASING);

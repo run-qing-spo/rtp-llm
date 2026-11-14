@@ -160,7 +160,7 @@ void FrozenTask::freeze() noexcept {
     state_        = State::FROZEN;
 }
 
-bool FrozenTask::unfreeze() noexcept {
+bool FrozenTask::completeRecovery() noexcept {
     {
         std::lock_guard<std::mutex> lock(mutex_);
         if (state_ != State::FROZEN) {

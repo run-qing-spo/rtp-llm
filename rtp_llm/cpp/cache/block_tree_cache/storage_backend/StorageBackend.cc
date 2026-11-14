@@ -380,7 +380,7 @@ void StorageBackend::quarantineTask(
     const std::shared_ptr<storage_backend_detail::StorageTaskState>& state,
     bool                                                             is_write,
     StorageQuarantineReason                                          reason,
-    StorageLocalTargetProtection                                     local_target_protection) {
+    StorageTargetProtection                                          local_target_protection) {
     if (!state) {
         return;
     }
@@ -398,7 +398,7 @@ void StorageBackend::quarantineTask(
         protected_quarantine_ = state;
         state->quarantined = true;
     } else {
-        if (local_target_protection == StorageLocalTargetProtection::FREEZE_IN_STORAGE_BACKEND) {
+        if (local_target_protection == StorageTargetProtection::FREEZE_REQUEST_BLOCKS) {
             for (const auto& held_block : state->held_blocks) {
                 held_block.pool->freezeBlock(held_block.block);
             }
@@ -625,7 +625,7 @@ void StorageBackend::read(StorageRequest request, std::shared_ptr<StorageBackend
                 block_tree_cache_detail::ScopeRollback retire(std::move(finished));
                 storage_backend_detail::invokeCallback(this, [&] {
                     std::optional<StorageQuarantineReason> quarantine_reason;
-                    auto local_target_protection = StorageLocalTargetProtection::FREEZE_IN_STORAGE_BACKEND;
+                    auto local_target_protection = StorageTargetProtection::FREEZE_REQUEST_BLOCKS;
                     if (error.ok()) {
                         try {
                             std::optional<TransferStageTimer> complete;
@@ -754,7 +754,7 @@ bool StorageBackend::write(StorageWriteTask task) {
             storage_backend_detail::invokeCallback(this, [&] {
                 bool success = false;
                 std::optional<StorageQuarantineReason> quarantine_reason;
-                auto local_target_protection = StorageLocalTargetProtection::FREEZE_IN_STORAGE_BACKEND;
+                auto local_target_protection = StorageTargetProtection::FREEZE_REQUEST_BLOCKS;
                 if (run) {
                     try {
                         std::optional<TransferStageTimer> complete;

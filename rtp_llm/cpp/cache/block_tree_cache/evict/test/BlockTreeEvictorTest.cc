@@ -1473,7 +1473,7 @@ TEST(BlockTreeEvictorAsyncTest, UnknownCompletionPreservesOnlyTargetAndReadmitsS
     EXPECT_FALSE(environment.host_pools_[0]->isAllocated(retry_target));
     EXPECT_EQ(environment.host_pools_[0]->treeRefCount(target), 1u);
     EXPECT_EQ(environment.transfer_dispatcher_->frozenTasks().size(), 1u);
-    frozen_tasks.front()->unfreeze();
+    frozen_tasks.front()->completeRecovery();
     EXPECT_FALSE(environment.host_pools_[0]->isAllocated(target));
 }
 

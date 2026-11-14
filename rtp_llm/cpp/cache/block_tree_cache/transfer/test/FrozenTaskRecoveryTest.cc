@@ -51,8 +51,8 @@ std::shared_ptr<FrozenTask> makeTask(TransferExecutionTrace trace, const std::sh
     execution.trace_id = std::move(trace);
     execution.operation = "load";
     execution.remote = remote;
-    execution.expected_peers = remote ? std::vector<FrozenTask::ExpectedPeer>{{0, "worker-0"}, {1, "worker-1"}} :
-                                        std::vector<FrozenTask::ExpectedPeer>{{0, "local"}};
+    execution.expected_peers = remote ? std::vector<FrozenTask::TransferParticipant>{{0, "worker-0"}, {1, "worker-1"}} :
+                                        std::vector<FrozenTask::TransferParticipant>{{0, "local"}};
     execution.expected_rank_count = execution.expected_peers.size();
     execution.descriptors.push_back({0, 0, Tier::REMOTE, Tier::DEVICE, {}, {{pool, block, 0}}});
     TransferResult failure(ErrorInfo(ErrorCode::TRANSFER_COMPLETION_UNKNOWN, "original business failure"), error);
@@ -343,14 +343,14 @@ TEST(FrozenTaskRecoveryTest, ConcurrentPassIsSkippedAndManualReleaseRaceIsCounte
         EXPECT_EQ(concurrent.queried, 0u);
         EXPECT_EQ(calls->load(), 1u);
         if (manual_release) {
-            EXPECT_TRUE(task->unfreeze());
+            EXPECT_TRUE(task->completeRecovery());
         }
         release->set_value();
         ASSERT_EQ(first.waitFor(2s), std::future_status::ready);
         EXPECT_EQ(first.get().released, manual_release ? 0u : 1u);
         EXPECT_EQ(task->snapshot().state, FrozenTask::State::RELEASED);
         EXPECT_EQ(pool->treeRefCount(block), 1u);
-        EXPECT_FALSE(task->unfreeze());
+        EXPECT_FALSE(task->completeRecovery());
         EXPECT_FALSE(recovery->runOnce(1000).skipped_running);
     }
 }
@@ -388,7 +388,7 @@ TEST(FrozenTaskRecoveryTest, InvalidTimeoutAndNonFrozenRecordsNeverInvokeQuery) 
     auto prepared = makeTask(uint64_t{1}, pool, hold(pool));
     auto released = makeTask(uint64_t{2}, pool, hold(pool));
     released->freeze();
-    ASSERT_TRUE(released->unfreeze());
+    ASSERT_TRUE(released->completeRecovery());
     auto frozen = makeTask(uint64_t{3}, pool, hold(pool));
     frozen->freeze();
     size_t sources = 0;
@@ -447,7 +447,7 @@ TEST(FrozenTaskRecoveryTest, BackgroundRetriesFailureAndRunningUntilSafeWithoutR
     EXPECT_EQ(pool->treeRefCount(block), 1u);
     EXPECT_EQ(task->failure().status.code(), ErrorCode::TRANSFER_COMPLETION_UNKNOWN);
     EXPECT_FALSE(task->failure().buffer_safe);
-    EXPECT_FALSE(task->unfreeze());
+    EXPECT_FALSE(task->completeRecovery());
 }
 
 TEST(FrozenTaskRecoveryTest, BackgroundEmptySourceWaitIsInterruptibleAndStartIsSingleUse) {

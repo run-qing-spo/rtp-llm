@@ -110,8 +110,8 @@ public:
     using ActualUriGather = std::vector<std::vector<kv_cache_manager::LocationSpecUnit*>>;
     using PayloadResult = BroadcastResult<FunctionRequestPB, FunctionResponsePB>;
 
-    static std::exception_ptr withTargetProtection(const std::exception_ptr& failure,
-                                                   StorageLocalTargetProtection protection) noexcept {
+    static std::exception_ptr copyFailureWithTargetProtection(const std::exception_ptr& failure,
+                                                              StorageTargetProtection protection) noexcept {
         // Throw/catch the requested subtype directly: allocation failure must
         // not be substituted for the UNKNOWN whose targets still need custody.
         try {
@@ -177,62 +177,20 @@ public:
             if (marked_failure)
                 return marked_failure;
             try {
-                marked_failure = withTargetProtection(failure, StorageLocalTargetProtection::TARGETS_HELD);
-                try {
-                    std::rethrow_exception(failure);
-                } catch (const StorageOperationCompletionUnknown& error) {
-                    diagnostics->failure_reason = kQuarantineReasons.at(static_cast<size_t>(error.reason()));
-                    if (rpc_result) {
-                        for (const auto& snapshot : rpc_result->rankSnapshots()) {
-                            if (snapshot.rank >= diagnostics->ranks.size())
-                                continue;
-                            auto& rank = diagnostics->ranks[snapshot.rank];
-                            rank.server_address = snapshot.server_address;
-                            switch (snapshot.dispatch_state) {
-                                case BroadcastDispatchState::NOT_SUBMITTED:
-                                    rank.dispatch_state = TransferRpcDispatchState::NOT_SUBMITTED;
-                                    break;
-                                case BroadcastDispatchState::POSSIBLY_SUBMITTED:
-                                    rank.dispatch_state = TransferRpcDispatchState::POSSIBLY_SUBMITTED;
-                                    break;
-                                case BroadcastDispatchState::SUBMITTED:
-                                    rank.dispatch_state = TransferRpcDispatchState::SUBMITTED;
-                                    break;
-                            }
-                            rank.dispatch_error = snapshot.dispatch_error;
-                            rank.cq_received = snapshot.cq_received;
-                            rank.cq_ok = snapshot.cq_ok;
-                            rank.grpc_code = snapshot.grpc_code;
-                            rank.grpc_message = snapshot.grpc_message;
-                            if (snapshot.cq_received && snapshot.cq_ok && snapshot.grpc_code
-                                && *snapshot.grpc_code == grpc::StatusCode::OK && snapshot.response) {
-                                rank.response_received = true;
-                                if (snapshot.response->has_remote_response())
-                                    observeResponse(rank, snapshot.response->remote_response());
-                            }
-                        }
-                    }
-                    rtp_llm::TransferResult result(
-                        ErrorInfo(ErrorCode::TRANSFER_COMPLETION_UNKNOWN, error.what()));
-                    result.execution_diagnostics = diagnostics;
-                    owner->populateReadDescriptors(execution, requests);
-                    auto frozen = std::make_shared<FrozenTask>(FrozenTask::prepare(std::move(execution)),
-                                                               std::move(result), std::move(cleanup));
-                    prepared_slot.front() = frozen;
-                    // All ownership nodes, snapshots and the propagated exception
-                    // are ready before acquiring the first frozen reference.
-                    frozen->freeze();
-                    owner->retainFrozenTask(prepared_slot);
-                    try {
-                        RTP_LLM_LOG_WARNING("KVCM READ frozen: %s", frozen->debugString().c_str());
-                    } catch (...) {
-                        // Diagnostics cannot undo already retained custody.
-                    }
-                }
+                auto protected_failure =
+                    copyFailureWithTargetProtection(failure, StorageTargetProtection::PROTECTED_BY_BACKEND);
+                auto frozen = prepareFrozenTask(failure);
+                prepared_slot.front() = frozen;
+                // All ownership nodes, snapshots and the propagated exception
+                // are ready before acquiring the first frozen reference.
+                frozen->freeze();
+                owner->retainFrozenTask(prepared_slot);
+                marked_failure = std::move(protected_failure);
+                logFrozenTask(*frozen);
+                return marked_failure;
             } catch (...) {
                 std::terminate();
             }
-            return marked_failure;
         }
 
         Impl* owner;
@@ -244,6 +202,59 @@ public:
         std::mutex mutex;
         std::exception_ptr marked_failure;
         TransferCompletionCleanup::Prepared cleanup;
+
+    private:
+        std::shared_ptr<FrozenTask> prepareFrozenTask(const std::exception_ptr& failure) {
+            try {
+                std::rethrow_exception(failure);
+            } catch (const StorageOperationCompletionUnknown& error) {
+                diagnostics->failure_reason = kQuarantineReasons.at(static_cast<size_t>(error.reason()));
+                if (rpc_result) {
+                    for (const auto& snapshot : rpc_result->rankSnapshots()) {
+                        if (snapshot.rank >= diagnostics->ranks.size())
+                            continue;
+                        auto& rank = diagnostics->ranks[snapshot.rank];
+                        rank.server_address = snapshot.server_address;
+                        switch (snapshot.dispatch_state) {
+                            case BroadcastDispatchState::NOT_SUBMITTED:
+                                rank.dispatch_state = TransferRpcDispatchState::NOT_SUBMITTED;
+                                break;
+                            case BroadcastDispatchState::POSSIBLY_SUBMITTED:
+                                rank.dispatch_state = TransferRpcDispatchState::POSSIBLY_SUBMITTED;
+                                break;
+                            case BroadcastDispatchState::SUBMITTED:
+                                rank.dispatch_state = TransferRpcDispatchState::SUBMITTED;
+                                break;
+                        }
+                        rank.dispatch_error = snapshot.dispatch_error;
+                        rank.cq_received = snapshot.cq_received;
+                        rank.cq_ok = snapshot.cq_ok;
+                        rank.grpc_code = snapshot.grpc_code;
+                        rank.grpc_message = snapshot.grpc_message;
+                        if (snapshot.cq_received && snapshot.cq_ok && snapshot.grpc_code
+                            && *snapshot.grpc_code == grpc::StatusCode::OK && snapshot.response) {
+                            rank.response_received = true;
+                            if (snapshot.response->has_remote_response())
+                                observeResponse(rank, snapshot.response->remote_response());
+                        }
+                    }
+                }
+                rtp_llm::TransferResult result(
+                    ErrorInfo(ErrorCode::TRANSFER_COMPLETION_UNKNOWN, error.what()));
+                result.execution_diagnostics = diagnostics;
+                owner->populateReadDescriptors(execution, requests);
+                return std::make_shared<FrozenTask>(FrozenTask::prepare(std::move(execution)),
+                                                   std::move(result), std::move(cleanup));
+            }
+        }
+
+        static void logFrozenTask(const FrozenTask& task) noexcept {
+            try {
+                RTP_LLM_LOG_WARNING("KVCM READ frozen: %s", task.debugString().c_str());
+            } catch (...) {
+                // Diagnostics cannot undo already retained custody.
+            }
+        }
     };
     using ReadCompletionContextPtr = std::shared_ptr<ReadCompletionContext>;
 
@@ -1163,8 +1174,8 @@ public:
             rethrowPayloadFailure(source_may_be_touched);
         } catch (const StorageOperationCompletionUnknown&) {
             if (!decode_publication_enabled_)
-                std::rethrow_exception(withTargetProtection(std::current_exception(),
-                                                           StorageLocalTargetProtection::NO_LOCAL_TARGETS));
+                std::rethrow_exception(copyFailureWithTargetProtection(std::current_exception(),
+                                                                      StorageTargetProtection::NO_LOCAL_TARGETS));
             throw;
         }
     }

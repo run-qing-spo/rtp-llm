@@ -75,7 +75,7 @@ TEST(FrozenTaskTest, PreparationDoesNotAcquireReferencesAndOnlyTargetsFreeze) {
 
     FrozenTask task(std::move(prepared), unknownResult());
     EXPECT_EQ(task.snapshot().state, FrozenTask::State::PREPARED);
-    EXPECT_FALSE(task.unfreeze());
+    EXPECT_FALSE(task.completeRecovery());
     task.freeze();
     task.freeze();
     EXPECT_FALSE(source_pool->isFrozen(source));
@@ -89,11 +89,11 @@ TEST(FrozenTaskTest, PreparationDoesNotAcquireReferencesAndOnlyTargetsFreeze) {
     EXPECT_GT(frozen.frozen_at_us, 0);
     EXPECT_EQ(frozen.released_at_us, 0);
 
-    EXPECT_TRUE(task.unfreeze());
+    EXPECT_TRUE(task.completeRecovery());
     const auto released = task.snapshot();
     EXPECT_EQ(released.state, FrozenTask::State::RELEASED);
     EXPECT_GT(released.released_at_us, 0);
-    EXPECT_FALSE(task.unfreeze());
+    EXPECT_FALSE(task.completeRecovery());
     task.freeze();
     EXPECT_EQ(task.snapshot().released_at_us, released.released_at_us);
     EXPECT_EQ(task.snapshot().frozen_at_us, frozen.frozen_at_us);
@@ -125,7 +125,7 @@ TEST(FrozenTaskTest, DeduplicatesTargetSlotsAcrossDescriptorsButKeepsCompleteMet
     EXPECT_EQ(task.execution().descriptors[1].targets.size(), 2u);
     EXPECT_EQ(task.execution().descriptors[0].sources[0].pool_name, "first");
     EXPECT_EQ(task.execution().descriptors[1].targets[1].pool_name, "second");
-    task.unfreeze();
+    task.completeRecovery();
     EXPECT_EQ(first_pool->treeRefCount(first), 1u);
     EXPECT_EQ(second_pool->treeRefCount(second), 1u);
 }
@@ -141,12 +141,12 @@ TEST(FrozenTaskTest, SharedTargetsKeepIndependentTaskReferencesAcrossBusinessRel
     EXPECT_EQ(pool->referencedBlocksNum(BlockTreeRefType::FROZEN), 1u);
 
     pool->decTreeRef(block, BlockTreeRefType::CACHE);
-    EXPECT_TRUE(first.unfreeze());
-    EXPECT_FALSE(first.unfreeze());
+    EXPECT_TRUE(first.completeRecovery());
+    EXPECT_FALSE(first.completeRecovery());
     EXPECT_TRUE(pool->isAllocated(block));
     EXPECT_TRUE(pool->isFrozen(block));
     EXPECT_EQ(pool->treeRefCount(block), 1u);
-    EXPECT_TRUE(second.unfreeze());
+    EXPECT_TRUE(second.completeRecovery());
     EXPECT_FALSE(pool->isAllocated(block));
     EXPECT_EQ(pool->referencedBlocksNum(BlockTreeRefType::FROZEN), 0u);
     EXPECT_EQ(pool->freeBlocksNum(), pool->totalBlocksNum());
@@ -185,7 +185,7 @@ TEST(FrozenTaskTest, PoolOwnershipOutlivesCallerAndSourceAllocation) {
         EXPECT_FALSE(weak_source.expired());
         EXPECT_FALSE(weak_target.expired());
         EXPECT_NE(task.debugString().find("source-lifetime"), std::string::npos);
-        task.unfreeze();
+        task.completeRecovery();
         EXPECT_EQ(weak_target.lock()->freeBlocksNum(), weak_target.lock()->totalBlocksNum());
     }
     EXPECT_TRUE(weak_source.expired());
@@ -215,8 +215,8 @@ TEST(FrozenTaskTest, ThrowingCapacityNotificationsCannotInterruptOrRepeatBatchRe
     task.freeze();
     first_pool->decTreeRef({first, other}, BlockTreeRefType::CACHE);
     second_pool->decTreeRef(second, BlockTreeRefType::CACHE);
-    EXPECT_TRUE(task.unfreeze());
-    EXPECT_FALSE(task.unfreeze());
+    EXPECT_TRUE(task.completeRecovery());
+    EXPECT_FALSE(task.completeRecovery());
     EXPECT_EQ(first_notifications, 1u);
     EXPECT_EQ(second_notifications, 1u);
     EXPECT_EQ(task.snapshot().state, FrozenTask::State::RELEASED);
@@ -234,19 +234,19 @@ TEST(FrozenTaskTest, ReleaseNotificationsCanInspectAndReenterTaskWithoutRepeatin
         ASSERT_NE(observed, nullptr);
         EXPECT_EQ(observed->snapshot().state, FrozenTask::State::RELEASING);
         EXPECT_NE(observed->debugString().find("state=RELEASING"), std::string::npos);
-        EXPECT_FALSE(observed->unfreeze());
+        EXPECT_FALSE(observed->completeRecovery());
         observed->freeze();
     });
     FrozenTask task(FrozenTask::prepare(execution(28, {}, {{pool, block, 0}})), unknownResult());
     observed = &task;
     task.freeze();
-    EXPECT_TRUE(task.unfreeze());
+    EXPECT_TRUE(task.completeRecovery());
     EXPECT_EQ(notifications, 1u);
     EXPECT_EQ(task.snapshot().state, FrozenTask::State::RELEASED);
     EXPECT_EQ(pool->treeRefCount(block), 1u);
 }
 
-TEST(FrozenTaskTest, ConcurrentRepeatedFreezeAndUnfreezeOwnOneReference) {
+TEST(FrozenTaskTest, ConcurrentRepeatedFreezeAndRecoveryOwnOneReference) {
     auto pool = makePool("concurrent");
     auto cleanup = std::make_shared<TransferCompletionCleanup>();
     const auto block = heldBlock(pool);
@@ -265,7 +265,7 @@ TEST(FrozenTaskTest, ConcurrentRepeatedFreezeAndUnfreezeOwnOneReference) {
     std::atomic<size_t> releases{0};
     for (size_t i = 0; i < 8; ++i) {
         threads.emplace_back([&] {
-            if (task.unfreeze()) {
+            if (task.completeRecovery()) {
                 ++releases;
             }
         });
@@ -291,7 +291,7 @@ TEST(FrozenTaskTest, CleanupIsSubmittedOnlyAfterEveryPhysicalReleaseFinishes) {
         ++notifications;
         ASSERT_NE(observed, nullptr);
         EXPECT_EQ(observed->snapshot().state, FrozenTask::State::RELEASING);
-        EXPECT_FALSE(observed->unfreeze());
+        EXPECT_FALSE(observed->completeRecovery());
         EXPECT_EQ(cleanup->size(), 0u);
         EXPECT_FALSE(first_pool->isAllocated(first));
         EXPECT_TRUE(second_pool->isFrozen(second));
@@ -308,13 +308,13 @@ TEST(FrozenTaskTest, CleanupIsSubmittedOnlyAfterEveryPhysicalReleaseFinishes) {
                     unknownResult(),
                     cleanup->prepare({true, {{0, "worker-0:100"}, {1, "worker-1:100"}}}, uint64_t{36}));
     observed = &task;
-    EXPECT_FALSE(task.unfreeze());
+    EXPECT_FALSE(task.completeRecovery());
     EXPECT_EQ(cleanup->size(), 0u);
     task.freeze();
     first_pool->decTreeRef(first, BlockTreeRefType::CACHE);
     second_pool->decTreeRef(second, BlockTreeRefType::CACHE);
-    EXPECT_TRUE(task.unfreeze());
-    EXPECT_FALSE(task.unfreeze());
+    EXPECT_TRUE(task.completeRecovery());
+    EXPECT_FALSE(task.completeRecovery());
     EXPECT_EQ(notifications, 2u);
     EXPECT_EQ(task.snapshot().state, FrozenTask::State::RELEASED);
     EXPECT_EQ(cleanup->size(), 1u);
@@ -370,7 +370,7 @@ TEST(FrozenTaskTest, PendingCleanupDoesNotRetainTheReleasedTaskOrPools) {
         task->freeze();
         source_pool->decTreeRef(source, BlockTreeRefType::CACHE);
         target_pool->decTreeRef(target, BlockTreeRefType::CACHE);
-        EXPECT_TRUE(task->unfreeze());
+        EXPECT_TRUE(task->completeRecovery());
         EXPECT_EQ(cleanup->size(), 1u);
     }
     EXPECT_TRUE(weak_task.expired());
@@ -448,7 +448,7 @@ TEST(FrozenTaskTest, RecoveryQueriesPreserveOriginalFailureAndDoNotReleaseTarget
                               "state=BUFFER_SAFE", "failure_reason=\"worker_completion_unknown\""}) {
         EXPECT_NE(safe_log.find(field), std::string::npos) << field << '\n' << safe_log;
     }
-    EXPECT_TRUE(task.unfreeze());
+    EXPECT_TRUE(task.completeRecovery());
     EXPECT_EQ(task.recoverySnapshot().last_query, safe_result);
 }
 
@@ -482,7 +482,7 @@ TEST(FrozenTaskTest, ConcurrentRecoveryQueriesRetainCountAndLatestStringTraceObs
     const auto log = task.debugString();
     EXPECT_NE(log.find("last_recovery_query={trace=\"read-35\",all_safe=false"), std::string::npos);
     EXPECT_NE(log.find("state=UNKNOWN,admission_closed=false,grpc_code=unknown,error=\"not observed\""), std::string::npos);
-    EXPECT_TRUE(task.unfreeze());
+    EXPECT_TRUE(task.completeRecovery());
 }
 
 TEST(FrozenTaskTest, InvalidTargetPreparationDoesNotAcquireAnyFrozenHold) {
@@ -568,7 +568,7 @@ TEST(FrozenTaskTest, DiagnosticsRetainEveryRankOutcomeAndAllEndpointRoles) {
         EXPECT_NE(log.find(expected), std::string::npos) << expected << '\n' << log;
     }
     EXPECT_EQ(task.failure().execution_diagnostics->ranks.size(), 2u);
-    task.unfreeze();
+    task.completeRecovery();
     EXPECT_NE(task.debugString().find("state=RELEASED"), std::string::npos);
 }
 
@@ -609,8 +609,8 @@ TEST(FrozenTaskTest, RemoteReadPreservesStringIdentityAndRejectsAnotherTraceName
                               "worker_transfer_status=3", "sdk_failed=false"}) {
         EXPECT_NE(log.find(field), std::string::npos) << field << '\n' << log;
     }
-    task.unfreeze();
-    task.unfreeze();
+    task.completeRecovery();
+    task.completeRecovery();
     EXPECT_EQ(pool->treeRefCount(block), 1u);
 }
 

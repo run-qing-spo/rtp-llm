@@ -1285,7 +1285,7 @@ TEST(BlockTreeLoaderTest, UnknownDiskCompletionFreezesOnlyItsTargetBeforeHostCom
     for (const auto& target : frozen_tasks.front()->execution().descriptors.front().targets) {
         EXPECT_EQ(target.pool->treeRefCount(target.block), 1u);
     }
-    frozen_tasks.front()->unfreeze();
+    frozen_tasks.front()->completeRecovery();
     env->expectFullyReclaimed();
 }
 

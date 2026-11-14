@@ -808,7 +808,7 @@ TEST_F(MultiRankBlockTransferEngineTest, FrozenExecutionKeepsWireTraceAndSeparat
             EXPECT_EQ(request.transfer_trace_id(), std::get<uint64_t>(record.execution().trace_id));
     }
     EXPECT_EQ(pool->treeRefCount(target), 1u);
-    records.front()->unfreeze();
+    records.front()->completeRecovery();
     EXPECT_EQ(pool->freeBlocksNum(), pool->totalBlocksNum());
 }
 
@@ -2255,7 +2255,7 @@ static void mixedBroadcastLosesCompletion(bool through_dispatcher) {
         EXPECT_EQ(dispatcher.frozenTasks().front()->snapshot().target_block_count, 2u);
         groups[0]->hostPool()->decTreeRef(first, BlockTreeRefType::EVICTION);
         groups[1]->hostPool()->decTreeRef(second, BlockTreeRefType::EVICTION);
-        dispatcher.frozenTasks().front()->unfreeze();
+        dispatcher.frozenTasks().front()->completeRecovery();
     } else {
         auto context = engine->execute(std::move(task));
         context->waitDone();
