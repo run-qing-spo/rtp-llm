@@ -102,7 +102,16 @@ TEST(FrozenTaskRecoveryTest, LocalNumericAndStringProofsRecoverNonRpcFailuresWit
         return kvcm.queryLocal(std::vector<std::string>{std::get<std::string>(trace)}).front();
     });
     FrozenTaskRecovery recovery([&] { return std::vector<std::shared_ptr<FrozenTask>>{first, second}; },
-                                [&](const auto& execution, int timeout) { return local.query(execution, timeout); });
+                                [&](const auto& execution, int timeout) {
+                                    TransferCompletionIdentity identity;
+                                    identity.trace_id = execution.trace_id;
+                                    identity.request_id = execution.request_id;
+                                    identity.remote = execution.remote;
+                                    identity.expected_rank_count = execution.expected_rank_count;
+                                    for (const auto& peer : execution.expected_peers)
+                                        identity.expected_peers.push_back({peer.rank, peer.address});
+                                    return local.query(identity, timeout);
+                                });
     const auto pending = recovery.runOnce(1000);
     EXPECT_EQ(pending.queried, 2u);
     EXPECT_EQ(pending.pending, 2u);

@@ -2766,7 +2766,7 @@ private:
                                     ? std::shared_ptr<std::vector<FunctionRequestPB>>(completion_context, &completion_context->requests)
                                     : std::make_shared<std::vector<FunctionRequestPB>>(std::move(requests));
         std::function<void()> run =
-            [this, payload_requests = std::move(payload_requests), &request, local, complete, execution, completion_context]() {
+            [this, payload_requests = std::move(payload_requests), &request, local, complete, execution, completion_context]() mutable {
                 try {
                     local->responses = dispatchRequests(*payload_requests, request, local->touched, local->sdk_failed,
                                                         execution, completion_context);

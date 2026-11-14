@@ -867,16 +867,20 @@ KVCacheManager::forgetTransferCompletion(const TransferCompletionTarget& target,
 
 TransferCompletionQueryResult KVCacheManager::queryTransferCompletion(const FrozenTask::ExecutionInfo& execution,
                                                                     int timeout_ms) const {
+    TransferCompletionIdentity identity;
+    identity.trace_id            = execution.trace_id;
+    identity.request_id          = execution.request_id;
+    identity.remote              = execution.remote;
+    identity.expected_rank_count = execution.expected_rank_count;
+    identity.expected_peers.reserve(execution.expected_peers.size());
+    for (const auto& peer : execution.expected_peers) {
+        identity.expected_peers.push_back({peer.rank, peer.address});
+    }
     return TransferCompletionQuery(transfer_broadcast_manager_,
                                    [this](const TransferExecutionTrace& trace_id) {
                                        return localTransferCompletion(trace_id);
                                    })
-        .query({execution.trace_id,
-                execution.request_id,
-                execution.remote,
-                execution.expected_rank_count,
-                {execution.expected_peers.begin(), execution.expected_peers.end()}},
-               timeout_ms);
+        .query(identity, timeout_ms);
 }
 
 bool KVCacheManager::executeFunction(const FunctionRequestPB& request, FunctionResponsePB& response) {

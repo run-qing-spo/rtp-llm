@@ -407,7 +407,16 @@ protected:
     size_t recover(const std::vector<std::shared_ptr<FrozenTask>>& records) {
         FrozenTaskRecovery recovery(
             [this] { return coordinator_->frozenTasks(); },
-            [this](const auto& execution, int timeout) { return TransferCompletionQuery(broadcast_).query(execution, timeout); });
+            [this](const auto& execution, int timeout) {
+                TransferCompletionIdentity identity;
+                identity.trace_id = execution.trace_id;
+                identity.request_id = execution.request_id;
+                identity.remote = execution.remote;
+                identity.expected_rank_count = execution.expected_rank_count;
+                for (const auto& peer : execution.expected_peers)
+                    identity.expected_peers.push_back({peer.rank, peer.address});
+                return TransferCompletionQuery(broadcast_).query(identity, timeout);
+            });
         EXPECT_TRUE(recovery.start(10, 1000));
         const auto deadline = Clock::now() + 10s;
         // This waits only for production completion/recovery; no producer is
