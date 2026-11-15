@@ -373,7 +373,6 @@ TEST(KVCMFrozenTaskTest, EnumerationKeepsReleasingRecordUntilCapacityNotificatio
     auto record = records.front();
     const std::weak_ptr<FrozenTask> observed = record;
     records.clear();
-    // Leave only the frozen hold so recovery completion grows pool capacity.
     environment->device_pool->decRef(environment->block_id);
     BoundedThread<bool> releasing([record, environment, backend] {
         (void)environment;

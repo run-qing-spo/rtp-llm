@@ -932,9 +932,6 @@ message TransferCompletionQueryRequestPB {
 message TransferCompletionEntryPB {
     TransferCompletionKeyPB key = 1;
     TransferCompletionStatePB state = 2;
-    // UNKNOWN is safe only when the worker atomically banned this missing trace.
-    // The missing-trace fence is consumed by the first rejected admission or
-    // removed on expiry; it does not cover duplicate or indefinitely late delivery.
     bool admission_closed = 3;
 }
 

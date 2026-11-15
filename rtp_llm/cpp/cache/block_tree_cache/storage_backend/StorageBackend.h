@@ -66,9 +66,9 @@ using StorageQuarantineBreakdown = std::array<std::array<StorageQuarantineCounts
 // Describes who protects local targets after UNKNOWN, not whether I/O is safe.
 // Protected completion ownership always takes precedence over this marker.
 enum class StorageTargetProtection {
-    FREEZE_REQUEST_BLOCKS,  // StorageBackend acquires the frozen references.
-    PROTECTED_BY_BACKEND,   // The backend already owns protection for every local target.
-    NO_LOCAL_TARGETS,       // The operation only reads local sources.
+    FREEZE_REQUEST_BLOCKS,
+    PROTECTED_BY_BACKEND,
+    NO_LOCAL_TARGETS,
 };
 
 // The backend accepted an operation but cannot prove that DMA/RDMA has

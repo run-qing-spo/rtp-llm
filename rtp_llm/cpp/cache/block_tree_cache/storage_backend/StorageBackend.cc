@@ -334,8 +334,6 @@ void StorageBackend::shutdown() {
         lifecycle_ = Lifecycle::STOPPING;
         executor   = executor_;
     }
-    // RPCs may outlive their submitting worker. Keep the completion queue open
-    // until the last operation has released its held blocks or recorded quarantine.
     executor->stopAdmission();
     {
         std::unique_lock<std::mutex> lock(lifecycle_mutex_);
@@ -448,8 +446,6 @@ StorageBackend::prepare(StorageRequest request, bool for_write, uint64_t trace_i
                                 "protected storage I/O requires an actual transport resource owner");
     }
     if (for_write || state->completion_protected) {
-        // All metadata allocation and deduplication precedes block retention.
-        // In particular, recording a held block cannot allocate or lose it.
         std::unordered_set<BlockKey, BlockKeyHash> seen;
         std::vector<storage_backend_detail::StorageTaskState::HeldBlock> sources;
         for (const auto& row : state->request.handles) {

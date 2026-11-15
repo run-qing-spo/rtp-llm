@@ -38,7 +38,6 @@ public:
     explicit TransferBufferSafetyTracker(std::function<void()> safe_callback):
         safe_callback_(std::move(safe_callback)) {}
 
-    // The caller creates and retains a one-shot token before registering its batch.
     void addBatch() {
         std::lock_guard<std::mutex> lock(mutex_);
         if (submitting_finished_) {
@@ -64,7 +63,6 @@ public:
         }
     }
 
-    // Each registered batch must call this exactly once, through its safety token.
     void completeBatch() noexcept {
         std::function<void()> callback;
         {

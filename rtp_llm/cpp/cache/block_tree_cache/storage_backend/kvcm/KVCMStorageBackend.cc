@@ -181,8 +181,6 @@ public:
                     copyFailureWithTargetProtection(failure, StorageTargetProtection::PROTECTED_BY_BACKEND);
                 auto frozen = prepareFrozenTask(failure);
                 prepared_slot.front() = frozen;
-                // All ownership nodes, snapshots and the propagated exception
-                // are ready before acquiring the first frozen reference.
                 frozen->freeze();
                 owner->retainFrozenTask(prepared_slot);
                 marked_failure = std::move(protected_failure);
@@ -252,7 +250,6 @@ public:
             try {
                 RTP_LLM_LOG_WARNING("KVCM READ frozen: %s", task.debugString().c_str());
             } catch (...) {
-                // Diagnostics cannot undo already retained custody.
             }
         }
     };
@@ -988,8 +985,6 @@ public:
             throw StorageOperationBufferSafeFailure("remote cache disabled by KVCM before read submission");
         }
         completion_context = prepareReadCompletionContext(request, requests);
-        // Keep the original payloads through asynchronous settlement. The
-        // StorageRequest still owns the destination pins during completion.
         const bool retain_requests = !decode_publication_enabled_;
         if (retain_requests)
             completion_context->requests = std::move(requests);
@@ -1158,8 +1153,6 @@ public:
             rethrowPayloadFailure(source_may_be_touched);
         } catch (const StorageOperationCompletionUnknown&) {
             if (decode_publication_enabled_) {
-                // Protected payloads retain their worker resources on UNKNOWN.
-                // Preserve completion evidence while that protection is active.
                 finalize.dismiss();
                 throw;
             }

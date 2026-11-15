@@ -45,10 +45,6 @@ public:
     // A valid attempt is single-use, including thread-creation failure; stop
     // also prevents a later start. Failure returns false without throwing.
     bool start(int interval_ms, int query_timeout_ms) noexcept;
-    // Wake interval waits and join after any current query returns. No further
-    // background callbacks or releases run after stop returns. Does not force recovery completion.
-    // The owner must finish any concurrent explicit runOnce calls before stop
-    // or destruction; stop only joins the worker owned by this instance.
     void stop() noexcept;
 
     // Only FROZEN tasks are queried. Stop is checked before/after each query and

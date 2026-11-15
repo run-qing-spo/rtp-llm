@@ -112,10 +112,6 @@ public:
     FrozenTask(const FrozenTask&)            = delete;
     FrozenTask& operator=(const FrozenTask&) = delete;
 
-    // Idempotent, single-use lifecycle. freeze after RELEASED is a no-op.
-    // Concurrent completeRecovery callers do not repeat decrements; RELEASING remains
-    // visible until the owner finishes. Notifications run without this mutex.
-    // Only the caller completing FROZEN -> RELEASED returns true.
     void freeze() noexcept;
     bool completeRecovery() noexcept;
 
