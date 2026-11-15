@@ -425,7 +425,9 @@ std::shared_ptr<TransferAsyncContext> PerRankBlockTransferEngine::execute(Transf
                         batch.push_back(std::move(descriptors[index]));
                     }
                 }
-                batch_proof = safety->addBatch();
+                auto prepared_proof = std::make_shared<TransferBufferSafety>([safety] { safety->completeBatch(); });
+                safety->addBatch();
+                batch_proof = std::move(prepared_proof);
                 auto completed = std::make_shared<std::atomic<bool>>(false);
                 complete = [state, indices, completed](TransferResult result) {
                     if (!completed->exchange(true, std::memory_order_acq_rel))
