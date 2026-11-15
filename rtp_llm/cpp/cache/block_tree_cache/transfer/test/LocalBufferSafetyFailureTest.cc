@@ -132,10 +132,13 @@ TEST(LocalBufferSafetyFailureTest, RealEnginePreparationFailurePublishesUnsubmit
     TransferTaskRegistry registry;
     TransferTask task({TransferDescriptor::hostToDisk(0, 1, 1)}, 30s);
     const auto trace = task.traceId();
-    registerTask(registry, task);
+    auto safety = std::make_shared<TransferBufferSafetyTracker>([&registry, trace] {
+        registry.finish(trace, true);
+    });
+    ASSERT_TRUE(registry.begin(trace));
     bool threw = false;
-    allocation_countdown = 0;  // group_sets.reserve(), before any producer is entered.
-    try { engine.execute(std::move(task)); } catch (const std::bad_alloc&) { threw = true; }
+    allocation_countdown = 0;  // group preparation, before any producer is entered.
+    try { engine.execute(std::move(task), std::move(safety)); } catch (const std::bad_alloc&) { threw = true; }
     allocation_countdown = -1;
     EXPECT_TRUE(threw);
     EXPECT_EQ(state(registry, trace), State::BUFFER_SAFE);

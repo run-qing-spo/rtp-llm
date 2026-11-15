@@ -79,6 +79,26 @@ public:
     std::function<void(const TransferTask&, const std::shared_ptr<TransferBatchAsyncContext>&)> after_start;
 };
 
+TEST(WorkerTransferRegistryTest, EngineEarlyReturnsCloseExecutionTrackerExactlyOnce) {
+    ControlledProducer engine;
+    for (bool expired : {false, true}) {
+        SCOPED_TRACE(expired);
+        auto execution = task(expired ? 1 : 0);
+        if (expired)
+            execution.deadline_ = TransferTask::Clock::now() - std::chrono::seconds(1);
+        size_t notifications = 0;
+        auto safety = std::make_shared<TransferBufferSafetyTracker>([&] { ++notifications; });
+        auto context = engine.execute(std::move(execution), safety);
+        ASSERT_TRUE(context->done());
+        EXPECT_FALSE(context->success());
+        EXPECT_TRUE(context->result().buffer_safe);
+        EXPECT_EQ(notifications, 1u);
+        safety->finishSubmitting();
+        EXPECT_EQ(notifications, 1u);
+    }
+    EXPECT_EQ(engine.submissions, 0u);
+}
+
 TEST(WorkerTransferRegistryTest, RecoveryQueryRejectsLateExecutionWithFreshDeadline) {
     auto engine = std::make_shared<ControlledProducer>();
     BlockTransferDispatcher dispatcher(engine);

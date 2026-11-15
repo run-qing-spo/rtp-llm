@@ -159,7 +159,7 @@ std::shared_ptr<TransferAsyncContext> BlockTransferDispatcher::executePerRank(Tr
     // The safety callback owns the registry, not the dispatcher's business lifetime.
     const auto ticket = trackTransfer();
     auto context = std::make_shared<TransferBatchAsyncContext>(task.descriptors().size());
-    auto proof = std::make_shared<TransferBufferSafety>([registry = task_registry_, trace_id] {
+    auto safety = std::make_shared<TransferBufferSafetyTracker>([registry = task_registry_, trace_id] {
         registry->finish(trace_id, true);
     });
     if (numeric_trace_id == 0 || !task_registry_->begin(trace_id)) {
@@ -172,15 +172,15 @@ std::shared_ptr<TransferAsyncContext> BlockTransferDispatcher::executePerRank(Tr
         return std::make_shared<CompletedTransferAsyncContext>(
             std::move(result), task.descriptors().size());
     }
-    block_tree_cache_detail::ScopeRollback close_submission([proof] {
-        proof->report(true);
+    block_tree_cache_detail::ScopeRollback close_submission([safety] {
+        safety->finishSubmitting();
     });
     warnRegistrySize();
     if (task.expired()) {
         TransferResult result(ErrorInfo(ErrorCode::DEADLINE_EXCEEDED, "transfer deadline exceeded before TE submission"),
                               CacheCopyError::NOT_EXECUTED);
         result.buffer_safe = true;  // No batch was submitted.
-        proof->report(true);
+        close_submission.run();
         context->complete(std::move(result));
         return context;
     }
@@ -188,9 +188,8 @@ std::shared_ptr<TransferAsyncContext> BlockTransferDispatcher::executePerRank(Tr
         [ticket, context](TransferResult result) { context->complete(std::move(result)); };
     TransferResult observation_failure(ErrorInfo(
         ErrorCode::TRANSFER_COMPLETION_UNKNOWN, "failed to observe submitted local transfer completion"));
-    task.setCompletionProof(std::move(proof));
     close_submission.dismiss();
-    auto child = per_rank_engine_->execute(std::move(task));
+    auto child = per_rank_engine_->execute(std::move(task), std::move(safety));
     if (!child) {
         context->complete(ErrorInfo(ErrorCode::EXECUTION_EXCEPTION, "transfer engine returned a null context"));
     } else {
