@@ -302,7 +302,7 @@ TEST(WorkerTransferRegistryTest, AdmissionRejectionsRetainSafeRecordsAndWarnings
     EXPECT_EQ(state(dispatcher, empty_trace), State::BUFFER_SAFE);
 }
 
-TEST(WorkerTransferRegistryTest, LocalCoordinatorUsesActualChildTrace) {
+TEST(WorkerTransferRegistryTest, LocalCoordinatorPreservesTaskTrace) {
     auto engine = std::make_shared<ControlledProducer>();
     BlockTransferDispatcher dispatcher(engine);
     auto parent = task();
@@ -313,13 +313,42 @@ TEST(WorkerTransferRegistryTest, LocalCoordinatorUsesActualChildTrace) {
         EXPECT_TRUE(value.ok());
     });
     ASSERT_EQ(engine->traces.size(), 1u);
-    const auto child_trace = engine->traces.front();
-    EXPECT_NE(child_trace, parent_trace);
-    EXPECT_EQ(state(dispatcher, parent_trace), State::UNKNOWN);
-    EXPECT_EQ(state(dispatcher, child_trace), State::RUNNING);
+    EXPECT_EQ(engine->traces.front(), parent_trace);
+    EXPECT_EQ(state(dispatcher, parent_trace), State::RUNNING);
     engine->producers.front()->complete(result(true));
     EXPECT_EQ(calls, 1u);
-    EXPECT_EQ(state(dispatcher, child_trace), State::BUFFER_SAFE);
+    EXPECT_EQ(state(dispatcher, parent_trace), State::BUFFER_SAFE);
+}
+
+TEST(WorkerTransferRegistryTest, CoordinatorRejectsRepeatedTaskWithoutResubmittingBatches) {
+    auto engine = std::make_shared<ControlledProducer>();
+    BlockTransferDispatcher dispatcher(engine);
+    const auto execution = task(3);
+    const auto trace = execution.traceId();
+    size_t original_calls = 0;
+    dispatcher.runTransfer(execution, [&](TransferResult value) {
+        ++original_calls;
+        EXPECT_TRUE(value.ok());
+    });
+    ASSERT_EQ(engine->submissions, 3u);
+    EXPECT_EQ(engine->traces, std::vector<uint64_t>(3, trace));
+
+    size_t duplicate_calls = 0;
+    dispatcher.runTransfer(execution, [&](TransferResult value) {
+        ++duplicate_calls;
+        EXPECT_EQ(value.status.code(), ErrorCode::INVALID_PARAMS);
+        EXPECT_EQ(value.copy_error, CacheCopyError::NOT_EXECUTED);
+        EXPECT_TRUE(value.buffer_safe);
+    });
+    EXPECT_EQ(duplicate_calls, 1u);
+    EXPECT_EQ(original_calls, 0u);
+    EXPECT_EQ(engine->submissions, 3u);
+    EXPECT_EQ(dispatcher.taskRegistry().size(), 1u);
+    EXPECT_EQ(state(dispatcher, trace), State::RUNNING);
+    for (const auto& producer : engine->producers)
+        producer->complete(result(true));
+    EXPECT_EQ(original_calls, 1u);
+    EXPECT_EQ(state(dispatcher, trace), State::BUFFER_SAFE);
 }
 
 TEST(WorkerTransferRegistryTest, SameTraceOnDifferentWorkersHasIndependentEvidence) {

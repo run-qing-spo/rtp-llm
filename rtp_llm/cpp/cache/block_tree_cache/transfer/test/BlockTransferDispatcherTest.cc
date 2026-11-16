@@ -661,8 +661,8 @@ TEST(BlockTransferDispatcherTest, CoordinatorCleanupRetainsKnownFailureUntilLate
             EXPECT_EQ(cleanup->size(), 1u);
         }, "load");
         ASSERT_EQ(engine->submitted_trace_ids_.size(), 1u);
-        const auto child_trace = engine->submitted_trace_ids_.front();
-        EXPECT_NE(child_trace, parent_trace);
+        const auto execution_trace = engine->submitted_trace_ids_.front();
+        EXPECT_EQ(execution_trace, parent_trace);
         EXPECT_EQ(cleanup->size(), 0u);
         ASSERT_NE(engine->submitted_proofs_.front(), nullptr);
         engine->submitted_proofs_.front()->report(initially_safe);
@@ -681,14 +681,14 @@ TEST(BlockTransferDispatcherTest, CoordinatorCleanupRetainsKnownFailureUntilLate
                 EXPECT_EQ(target.peers[0].rank, 0u);
                 EXPECT_EQ(target.peers[0].address, "local");
             }
-            EXPECT_EQ(traces, (std::vector<TransferExecutionTrace>{child_trace}));
+            EXPECT_EQ(traces, (std::vector<TransferExecutionTrace>{parent_trace}));
             return localCleanupForget(dispatcher)(target, traces, timeout_ms);
         };
         const auto first = cleanup->drain(forget, 1000);
         EXPECT_EQ(first.forgotten, initially_safe ? 1u : 0u);
         EXPECT_EQ(cleanup->size(), initially_safe ? 0u : 1u);
         if (!initially_safe) {
-            EXPECT_EQ(dispatcher.taskRegistry().queryLocal(std::vector<uint64_t>{child_trace}).front(),
+            EXPECT_EQ(dispatcher.taskRegistry().queryLocal(std::vector<uint64_t>{parent_trace}).front(),
                       TransferTaskRegistry::State::RUNNING);
             engine->submitted_proofs_.front()->report(true);
             EXPECT_EQ(cleanup->drain(forget, 1000).forgotten, 1u);
@@ -855,7 +855,7 @@ TEST(BlockTransferDispatcherTest, MultiRankCleanupKeepsOriginalParticipantsAndAc
     EXPECT_TRUE(result.buffer_safe);
     const auto trace = first.service.executed_trace.load();
     EXPECT_NE(trace, 0u);
-    EXPECT_NE(trace, parent_trace);
+    EXPECT_EQ(trace, parent_trace);
     EXPECT_EQ(second.service.executed_trace.load(), trace);
     EXPECT_EQ(local->submittedBatchCount(), 0u);
     EXPECT_EQ(cleanup->size(), 1u);

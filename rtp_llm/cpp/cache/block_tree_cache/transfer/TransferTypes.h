@@ -463,17 +463,6 @@ public:
         return task;
     }
 
-    // Construction gives each independently submitted RPC batch a new trace ID
-    // as its execution identity. Nested worker batches inherit that trace ID
-    // through subtask(), while the workflow links independent RPC batches.
-    TransferTask rpcSubtask(std::vector<TransferDescriptor> descriptors) const {
-        auto task = TransferTask(std::move(descriptors), *this);
-        task.completion_proof_.reset();
-        task.trace_id_ = next_trace_id_.fetch_add(1, std::memory_order_relaxed);
-        task.setWorkflow(workflow_id_, trace_id_);
-        return task;
-    }
-
 private:
     TransferTask(std::vector<TransferDescriptor> descriptors, const TransferTask& parent):
         descriptors_(std::move(descriptors)),

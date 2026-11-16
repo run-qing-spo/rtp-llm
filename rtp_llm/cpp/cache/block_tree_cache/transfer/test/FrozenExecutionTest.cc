@@ -145,7 +145,7 @@ TEST_F(FrozenExecutionTest, ActualExecutionTraceOwnsDeduplicatedTargetsBeforeBus
     auto executor = engine({first, second}, 1);
     BlockTransferDispatcher dispatcher(executor);
     auto task = parent({target, target});
-    const auto parent_trace = task.traceId();
+    const auto trace = task.traceId();
     size_t completions = 0;
     dispatcher.runTransfer(task, [&](TransferResult result) {
         ++completions;
@@ -156,7 +156,7 @@ TEST_F(FrozenExecutionTest, ActualExecutionTraceOwnsDeduplicatedTargetsBeforeBus
         host_->decTreeRef(target, BlockTreeRefType::LOAD);
     }, "load");
     ASSERT_EQ(executor->submitted_traces.size(), 2u);
-    EXPECT_NE(executor->submitted_traces[0], parent_trace);
+    EXPECT_EQ(executor->submitted_traces[0], trace);
     EXPECT_EQ(executor->submitted_traces[0], executor->submitted_traces[1]);
 
     first->deliver(unknownExecution());
@@ -167,7 +167,7 @@ TEST_F(FrozenExecutionTest, ActualExecutionTraceOwnsDeduplicatedTargetsBeforeBus
     const auto frozen = dispatcher.frozenTasks();
     ASSERT_EQ(frozen.size(), 1u);
     EXPECT_EQ(std::get<uint64_t>(frozen[0]->execution().trace_id), executor->submitted_traces[0]);
-    EXPECT_EQ(frozen[0]->execution().parent_trace_id, parent_trace);
+    EXPECT_EQ(frozen[0]->execution().parent_trace_id, 901u);
     EXPECT_EQ(frozen[0]->execution().workflow_id, 900u);
     EXPECT_EQ(frozen[0]->execution().request_id, 73);
     EXPECT_EQ(frozen[0]->execution().operation, "load");
@@ -194,21 +194,32 @@ TEST_F(FrozenExecutionTest, SeparateExecutionTracesSharingTargetReleaseOnlyTheir
     auto second = std::make_shared<ObservableContext>();
     auto executor = engine({first, second});
     BlockTransferDispatcher dispatcher(executor);
-    auto task = parent({target});
+    auto first_task = parent({target});
+    auto second_task = parent({target});
+    const auto first_trace = first_task.traceId();
+    const auto second_trace = second_task.traceId();
+    ASSERT_NE(first_trace, second_trace);
     size_t completions = 0;
     const auto complete = [&](TransferResult result) {
         EXPECT_EQ(result.status.code(), ErrorCode::TRANSFER_COMPLETION_UNKNOWN);
         ++completions;
     };
-    dispatcher.runTransfer(task, complete, "load");
-    dispatcher.runTransfer(task, complete, "load");
+    dispatcher.runTransfer(std::move(first_task), complete, "load");
+    dispatcher.runTransfer(std::move(second_task), complete, "load");
     ASSERT_EQ(executor->submitted_traces.size(), 2u);
-    EXPECT_NE(executor->submitted_traces[0], executor->submitted_traces[1]);
+    EXPECT_EQ(executor->submitted_traces[0], first_trace);
+    EXPECT_EQ(executor->submitted_traces[1], second_trace);
     first->deliver(unknownExecution());
     second->deliver(unknownExecution());
     EXPECT_EQ(completions, 2u);
     const auto frozen = dispatcher.frozenTasks();
     ASSERT_EQ(frozen.size(), 2u);
+    EXPECT_EQ(std::get<uint64_t>(frozen[0]->execution().trace_id), first_trace);
+    EXPECT_EQ(std::get<uint64_t>(frozen[1]->execution().trace_id), second_trace);
+    for (const auto& execution : frozen) {
+        EXPECT_EQ(execution->execution().workflow_id, 900u);
+        EXPECT_EQ(execution->execution().parent_trace_id, 901u);
+    }
     EXPECT_EQ(host_->treeRefCount(target), 3u);
     EXPECT_EQ(host_->referencedBlocksNum(BlockTreeRefType::FROZEN), 1u);
 

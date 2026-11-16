@@ -691,7 +691,7 @@ TEST_F(MultiRankBlockTransferEngineTest, CoordinatorSuccessDoesNotDependOnWaiter
     EXPECT_TRUE(context->success());
 }
 
-TEST_F(MultiRankBlockTransferEngineTest, DispatcherUsesDistinctExecutionIdentityAcrossSubmissions) {
+TEST_F(MultiRankBlockTransferEngineTest, DispatcherPreservesTaskWireIdentityAcrossSubmissions) {
     auto state = std::make_shared<MultiRankBlockTransferRpcState>();
     std::vector<std::unique_ptr<MultiRankBlockTransferRpcServer>> servers;
     auto manager = makeBroadcastManager({{true, MemoryOperationResponsePB::OK, grpc::Status::OK, state},
@@ -701,19 +701,24 @@ TEST_F(MultiRankBlockTransferEngineTest, DispatcherUsesDistinctExecutionIdentity
     auto                         cache  = makeBroadcastCache(manager);
     auto                         engine = std::make_shared<MultiRankBlockTransferEngine>(cache->groupSets(), manager);
     BlockTransferDispatcher      dispatcher(cache->transfer_dispatcher_->per_rank_engine_, engine);
-    TransferTask                 task({TransferDescriptor::hostToDevice(0, 1, {1}),
+    TransferTask                 first_task({TransferDescriptor::hostToDevice(0, 1, {1}),
                                        TransferDescriptor::hostToDevice(0, 2, {2}),
                                        TransferDescriptor::hostToDevice(0, 3, {3}),
                                        TransferDescriptor::hostToDevice(0, 4, {4})},
                       std::chrono::seconds(5),
                       42);
-    const auto                   root_id = task.traceId();
+    TransferTask                 second_task(first_task.descriptors(), std::chrono::seconds(5), 42);
+    first_task.setWorkflow(1234, 5678);
+    second_task.setWorkflow(1234, 5678);
+    const auto                   first_trace = first_task.traceId();
+    const auto                   second_trace = second_task.traceId();
+    ASSERT_NE(first_trace, second_trace);
     std::promise<TransferResult> complete;
     auto                         done = complete.get_future();
     std::promise<TransferResult> second_complete;
     auto                         second_done = second_complete.get_future();
-    dispatcher.runTransfer(task, [&](TransferResult result) { complete.set_value(std::move(result)); });
-    dispatcher.runTransfer(std::move(task),
+    dispatcher.runTransfer(std::move(first_task), [&](TransferResult result) { complete.set_value(std::move(result)); });
+    dispatcher.runTransfer(std::move(second_task),
                            [&](TransferResult result) { second_complete.set_value(std::move(result)); });
     ASSERT_EQ(done.wait_for(std::chrono::seconds(5)), std::future_status::ready);
     ASSERT_EQ(second_done.wait_for(std::chrono::seconds(5)), std::future_status::ready);
@@ -732,14 +737,14 @@ TEST_F(MultiRankBlockTransferEngineTest, DispatcherUsesDistinctExecutionIdentity
     for (const auto& request : state->requests) {
         EXPECT_EQ(request.copy_items_size(), 4);
         EXPECT_EQ(request.transfer_request_id(), 42);
-        EXPECT_NE(request.transfer_trace_id(), root_id);
-        EXPECT_EQ(request.transfer_workflow_id(), root_id);
-        EXPECT_EQ(request.transfer_parent_id(), root_id);
+        EXPECT_TRUE(request.transfer_trace_id() == first_trace || request.transfer_trace_id() == second_trace);
+        EXPECT_EQ(request.transfer_workflow_id(), 1234u);
+        EXPECT_EQ(request.transfer_parent_id(), 5678u);
         ++batches[request.transfer_trace_id()];
     }
     ASSERT_EQ(batches.size(), 2u);
-    for (const auto& batch : batches)
-        EXPECT_EQ(batch.second, 2u);
+    EXPECT_EQ(batches[first_trace], 2u);
+    EXPECT_EQ(batches[second_trace], 2u);
 }
 
 TEST_F(MultiRankBlockTransferEngineTest, FrozenExecutionKeepsWireTraceAndSeparateRankEvidence) {
@@ -758,8 +763,8 @@ TEST_F(MultiRankBlockTransferEngineTest, FrozenExecutionKeepsWireTraceAndSeparat
     const auto target = group->allocateSingleBlock(Tier::HOST, BlockTreeRefType::EVICTION);
     ASSERT_NE(target, NULL_BLOCK_IDX);
     TransferTask task({TransferDescriptor::deviceToHost(0, {1}, target)}, std::chrono::seconds(5), 42);
-    const auto parent_trace = task.traceId();
-    task.setWorkflow(1234);
+    const auto trace = task.traceId();
+    task.setWorkflow(1234, 5678);
     auto* dispatcher = cache->transfer_dispatcher_.get();
     std::promise<TransferResult> completion;
     auto done = completion.get_future();
@@ -775,8 +780,8 @@ TEST_F(MultiRankBlockTransferEngineTest, FrozenExecutionKeepsWireTraceAndSeparat
     auto records = dispatcher->frozenTasks();
     ASSERT_EQ(records.size(), 1u);
     const auto& record = *records.front();
-    EXPECT_NE(std::get<uint64_t>(record.execution().trace_id), parent_trace);
-    EXPECT_EQ(record.execution().parent_trace_id, parent_trace);
+    EXPECT_EQ(std::get<uint64_t>(record.execution().trace_id), trace);
+    EXPECT_EQ(record.execution().parent_trace_id, 5678u);
     EXPECT_EQ(record.execution().workflow_id, 1234u);
     EXPECT_EQ(record.execution().request_id, 42);
     EXPECT_EQ(record.execution().operation, "evict");
@@ -805,8 +810,11 @@ TEST_F(MultiRankBlockTransferEngineTest, FrozenExecutionKeepsWireTraceAndSeparat
     {
         std::lock_guard<std::mutex> lock(state->mutex);
         ASSERT_EQ(state->requests.size(), 2u);
-        for (const auto& request : state->requests)
+        for (const auto& request : state->requests) {
             EXPECT_EQ(request.transfer_trace_id(), std::get<uint64_t>(record.execution().trace_id));
+            EXPECT_EQ(request.transfer_workflow_id(), 1234u);
+            EXPECT_EQ(request.transfer_parent_id(), 5678u);
+        }
     }
     EXPECT_EQ(pool->treeRefCount(target), 1u);
     records.front()->completeRecovery(*cleanup);

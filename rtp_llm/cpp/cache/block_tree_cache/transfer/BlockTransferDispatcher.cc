@@ -314,8 +314,8 @@ void BlockTransferDispatcher::submitCoordinated(TransferTask task,
         if (execution->claimed.load(std::memory_order_acquire))
             throw; // Preserve exceptions from an inline business completion callback.
         if (!context) {
-            // The outer batch still owns error classification and settlement.
-            // Preserve this B's cleanup candidate even without a returned context.
+            // The caller still owns error classification and settlement.
+            // Preserve the execution's cleanup candidate even without a returned context.
             if (completion_cleanup_)
                 completion_cleanup_->enqueue(std::move(execution->cleanup));
             throw;
@@ -376,8 +376,7 @@ void BlockTransferDispatcher::runTransfer(TransferTask         task,
         }
         done(std::move(result));
     };
-    submitCoordinated(task.rpcSubtask(std::move(task.mutableDescriptorsForPreparation())),
-                      std::move(callback), completion_operation);
+    submitCoordinated(std::move(task), std::move(callback), completion_operation);
 }
 
 void BlockTransferDispatcher::cancelPendingStagingTransfers() const {
