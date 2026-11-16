@@ -56,10 +56,6 @@ std::shared_ptr<FrozenTask> makeTask(TransferExecutionTrace trace, const std::sh
     execution.expected_rank_count = execution.expected_peers.size();
     execution.descriptors.push_back({0, 0, Tier::REMOTE, Tier::DEVICE, {}, {{pool, block, 0}}});
     TransferResult failure(ErrorInfo(ErrorCode::TRANSFER_COMPLETION_UNKNOWN, "original business failure"), error);
-    auto diagnostics = std::make_shared<TransferExecutionDiagnostics>();
-    diagnostics->trace_id = execution.trace_id;
-    diagnostics->failure_reason = "existing_failure";
-    failure.execution_diagnostics = std::move(diagnostics);
     return std::make_shared<FrozenTask>(FrozenTask::prepare(std::move(execution)), std::move(failure));
 }
 
@@ -92,7 +88,6 @@ TEST(FrozenTaskRecoveryTest, LocalNumericAndStringProofsRecoverNonRpcFailuresWit
     auto second = makeTask(std::string("71"), pool, second_block, false, CacheCopyError::CRC_MISMATCH);
     first->freeze();
     second->freeze();
-    const auto original = first->failure().execution_diagnostics;
     TransferTaskRegistry ordinary;
     TransferTaskRegistry kvcm;
     ASSERT_TRUE(ordinary.begin(uint64_t{71}));
@@ -128,8 +123,6 @@ TEST(FrozenTaskRecoveryTest, LocalNumericAndStringProofsRecoverNonRpcFailuresWit
     EXPECT_EQ(first->failure().copy_error, CacheCopyError::IO_FAILED);
     EXPECT_EQ(second->failure().copy_error, CacheCopyError::CRC_MISMATCH);
     EXPECT_FALSE(first->failure().buffer_safe);
-    EXPECT_EQ(first->failure().execution_diagnostics, original);
-    EXPECT_EQ(first->failure().execution_diagnostics->failure_reason, "existing_failure");
     EXPECT_EQ(first->recoverySnapshot().query_count, 2u);
     ASSERT_NE(first->recoverySnapshot().last_query, nullptr);
     EXPECT_TRUE(first->recoverySnapshot().last_query->all_safe);

@@ -188,7 +188,7 @@ TEST(FrozenTaskTest, PoolOwnershipOutlivesCallerAndSourceAllocation) {
         target_pool.reset();
         EXPECT_FALSE(weak_source.expired());
         EXPECT_FALSE(weak_target.expired());
-        EXPECT_NE(task.debugString().find("source-lifetime"), std::string::npos);
+        EXPECT_EQ(task.execution().descriptors.front().sources.front().pool_name, "source-lifetime");
         task.completeRecovery(*cleanup);
         EXPECT_EQ(weak_target.lock()->freeBlocksNum(), weak_target.lock()->totalBlocksNum());
     }
@@ -239,7 +239,7 @@ TEST(FrozenTaskTest, ReleaseNotificationsCanInspectAndReenterTaskWithoutRepeatin
         ++notifications;
         ASSERT_NE(observed, nullptr);
         EXPECT_EQ(observed->snapshot().state, FrozenTask::State::RELEASING);
-        EXPECT_NE(observed->debugString().find("state=RELEASING"), std::string::npos);
+        EXPECT_EQ(observed->snapshot().state, FrozenTask::State::RELEASING);
         EXPECT_FALSE(observed->completeRecovery(*cleanup));
         observed->freeze();
     });
@@ -390,16 +390,7 @@ TEST(FrozenTaskTest, RecoveryQueriesPreserveOriginalFailureAndDoNotReleaseTarget
     auto pool = makePool("recovery-observation");
     const auto block = heldBlock(pool);
     auto info = execution(34, {}, {{pool, block, 0}});
-    auto diagnostics = std::make_shared<TransferExecutionDiagnostics>();
-    diagnostics->trace_id = info.trace_id;
-    diagnostics->failure_reason = "worker_completion_unknown";
-    TransferRankSnapshot original_rank;
-    original_rank.rank = 1;
-    original_rank.server_address = "worker-1:100";
-    original_rank.grpc_code = 4;
-    diagnostics->ranks.push_back(original_rank);
     auto failure = unknownResult();
-    failure.execution_diagnostics = diagnostics;
     const auto original_error = failure.status.ToString();
     FrozenTask task(FrozenTask::prepare(std::move(info)), std::move(failure));
     task.freeze();
@@ -421,13 +412,6 @@ TEST(FrozenTaskTest, RecoveryQueriesPreserveOriginalFailureAndDoNotReleaseTarget
     EXPECT_EQ(first.query_count, 1u);
     EXPECT_GT(first.last_query_at_us, 0);
     EXPECT_EQ(first.last_query, pending_result);
-    const auto pending_log = task.debugString();
-    for (const auto* field : {"recovery_query_count=1", "last_recovery_query={trace=34,all_safe=false",
-                              "error=\"rank 1 query timed out\"", "state=RUNNING,admission_closed=false,grpc_code=0",
-                              "state=UNKNOWN,admission_closed=false,grpc_code=4,error=\"deadline\",cq_received=false,cq_ok=false"}) {
-        EXPECT_NE(pending_log.find(field), std::string::npos) << field << '\n' << pending_log;
-    }
-
     TransferCompletionQueryResult safe;
     safe.trace_id = uint64_t{34};
     safe.all_safe = true;
@@ -446,15 +430,6 @@ TEST(FrozenTaskTest, RecoveryQueriesPreserveOriginalFailureAndDoNotReleaseTarget
     EXPECT_EQ(pool->treeRefCount(block), 2u);
     EXPECT_EQ(task.failure().status.ToString(), original_error);
     EXPECT_FALSE(task.failure().buffer_safe);
-    ASSERT_EQ(task.failure().execution_diagnostics, diagnostics);
-    EXPECT_EQ(task.failure().execution_diagnostics->failure_reason, "worker_completion_unknown");
-    ASSERT_EQ(task.failure().execution_diagnostics->ranks.size(), 1u);
-    EXPECT_EQ(task.failure().execution_diagnostics->ranks.front().grpc_code, 4);
-    const auto safe_log = task.debugString();
-    for (const auto* field : {"recovery_query_count=2", "last_recovery_query={trace=34,all_safe=true",
-                              "state=BUFFER_SAFE", "failure_reason=\"worker_completion_unknown\""}) {
-        EXPECT_NE(safe_log.find(field), std::string::npos) << field << '\n' << safe_log;
-    }
     EXPECT_TRUE(task.completeRecovery(*cleanup));
     EXPECT_EQ(task.recoverySnapshot().last_query, safe_result);
 }
@@ -487,9 +462,6 @@ TEST(FrozenTaskTest, ConcurrentRecoveryQueriesRetainCountAndLatestStringTraceObs
         thread.join();
     EXPECT_EQ(task.recoverySnapshot().query_count, 64u);
     EXPECT_EQ(task.snapshot().state, FrozenTask::State::FROZEN);
-    const auto log = task.debugString();
-    EXPECT_NE(log.find("last_recovery_query={trace=\"read-35\",all_safe=false"), std::string::npos);
-    EXPECT_NE(log.find("state=UNKNOWN,admission_closed=false,grpc_code=unknown,error=\"not observed\""), std::string::npos);
     EXPECT_TRUE(task.completeRecovery(*cleanup));
 }
 
@@ -506,82 +478,8 @@ TEST(FrozenTaskTest, InvalidTargetPreparationDoesNotAcquireAnyFrozenHold) {
     EXPECT_EQ(pool->treeRefCount(block), 1u);
 }
 
-TEST(FrozenTaskTest, DiagnosticsRetainEveryRankOutcomeAndAllEndpointRoles) {
-    auto cleanup = std::make_shared<TransferCompletionCleanup>();
-    auto target_pool = makePool("target-log");
-    const auto target = heldBlock(target_pool);
-    auto info = execution(31, {{nullptr, 7, 2, "unknown-source-pool"}}, {{target_pool, target, 4}});
-    auto diagnostics = std::make_shared<TransferExecutionDiagnostics>();
-    diagnostics->trace_id = info.trace_id;
-    TransferRankSnapshot first;
-    first.rank = 0;
-    first.server_address = "worker-0:100";
-    first.dispatch_state = TransferRpcDispatchState::SUBMITTED;
-    first.cq_received = true;
-    first.cq_ok = true;
-    first.grpc_code = 0;
-    first.response_received = true;
-    first.response_valid = true;
-    first.worker_error_code = static_cast<int64_t>(ErrorCode::EXECUTION_EXCEPTION);
-    first.worker_error_message = "completed CRC failure";
-    first.worker_copy_error = CacheCopyError::CRC_MISMATCH;
-    first.block_errors = {CacheCopyError::CRC_MISMATCH};
-    first.buffer_safe = true;
-    TransferRankSnapshot second;
-    second.rank = 1;
-    second.server_address = "worker-1:100";
-    second.dispatch_state = TransferRpcDispatchState::POSSIBLY_SUBMITTED;
-    second.dispatch_error = "submission completion unknown";
-    second.cq_received = true;
-    second.cq_ok = false;
-    second.grpc_code = 4;
-    second.grpc_message = "RPC deadline";
-    second.response_error = "no response";
-    diagnostics->ranks = {first, second};
-    auto failure = unknownResult();
-    failure.block_errors = {CacheCopyError::RPC_FAILED};
-    failure.execution_diagnostics = diagnostics;
-    FrozenTask task(FrozenTask::prepare(std::move(info)), std::move(failure));
-    task.freeze();
-    const auto log = task.debugString();
-    for (const auto* expected : {"trace=31",
-                                 "operation=\"load\"",
-                                 "request=73",
-                                 "workflow=11",
-                                 "parent_trace=12",
-                                 "expected_rank_count=2",
-                                 "state=FROZEN",
-                                 "target_block_count=1",
-                                 "source_tier=HOST",
-                                 "target_tier=DEVICE",
-                                 "unknown-source-pool",
-                                 "target-log",
-                                 "group_set=3",
-                                 "path_index=9",
-                                 "member=4",
-                                 "dispatch_state=SUBMITTED",
-                                 "dispatch_state=POSSIBLY_SUBMITTED",
-                                 "dispatch_error=\"submission completion unknown\"",
-                                 "cq_received=true",
-                                 "cq_ok=false",
-                                 "grpc_code=4",
-                                 "grpc_message=\"RPC deadline\"",
-                                 "response_received=true",
-                                 "response_valid=true",
-                                 "response_error=\"no response\"",
-                                 "worker_error_message=\"completed CRC failure\"",
-                                 "worker_copy_error=CRC_MISMATCH",
-                                 "block_errors=[CRC_MISMATCH]",
-                                 "buffer_safe=true",
-                                 "buffer_safe=unknown"}) {
-        EXPECT_NE(log.find(expected), std::string::npos) << expected << '\n' << log;
-    }
-    EXPECT_EQ(task.failure().execution_diagnostics->ranks.size(), 2u);
-    task.completeRecovery(*cleanup);
-    EXPECT_NE(task.debugString().find("state=RELEASED"), std::string::npos);
-}
 
-TEST(FrozenTaskTest, RemoteReadPreservesStringIdentityAndRejectsAnotherTraceNamespace) {
+TEST(FrozenTaskTest, RemoteReadPreservesStringIdentityAndRejectsEmptyTrace) {
     auto cleanup = std::make_shared<TransferCompletionCleanup>();
     auto pool = makePool("remote-target");
     const auto block = heldBlock(pool);
@@ -592,33 +490,16 @@ TEST(FrozenTaskTest, RemoteReadPreservesStringIdentityAndRejectsAnotherTraceName
     info.descriptors.front().rank = 0;
     info.descriptors.front().group_tag = "default";
     info.descriptors.front().source_uri = "pace://original-source";
-    auto diagnostics = std::make_shared<TransferExecutionDiagnostics>();
-    diagnostics->trace_id = uint64_t{33};
     auto failure = unknownResult();
-    failure.execution_diagnostics = diagnostics;
-    EXPECT_ANY_THROW(FrozenTask(FrozenTask::prepare(info), failure));
     EXPECT_FALSE(pool->isFrozen(block));
 
     auto invalid = info;
     invalid.trace_id = std::string{};
     EXPECT_ANY_THROW(FrozenTask::prepare(std::move(invalid)));
-    diagnostics->trace_id = info.trace_id;
-    diagnostics->failure_reason = "rpc_timeout";
-    TransferRankSnapshot rank;
-    rank.rank = 0;
-    rank.worker_transfer_status = 3;
-    rank.sdk_failed = false;
-    diagnostics->ranks.push_back(rank);
     FrozenTask task(FrozenTask::prepare(std::move(info)), std::move(failure));
     task.freeze();
     EXPECT_EQ(std::get<std::string>(task.execution().trace_id), "33");
     EXPECT_EQ(pool->treeRefCount(block), 2u);
-    const auto log = task.debugString();
-    for (const auto* field : {"trace=\"33\"", "execution_type=kvcm_read", "failure_reason=\"rpc_timeout\"",
-                              "source_uri=\"pace://original-source\"", "group_tag=\"default\"",
-                              "worker_transfer_status=3", "sdk_failed=false"}) {
-        EXPECT_NE(log.find(field), std::string::npos) << field << '\n' << log;
-    }
     task.completeRecovery(*cleanup);
     task.completeRecovery(*cleanup);
     EXPECT_EQ(pool->treeRefCount(block), 1u);

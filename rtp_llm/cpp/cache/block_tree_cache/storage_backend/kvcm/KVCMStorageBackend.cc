@@ -138,15 +138,6 @@ public:
             if (owner->decode_publication_enabled_)
                 return;
             prepared_slot.emplace_back();
-            diagnostics = std::make_shared<TransferExecutionDiagnostics>();
-            diagnostics->trace_id = this->execution.trace_id;
-            for (const auto& peer : this->execution.expected_peers) {
-                TransferRankSnapshot rank;
-                rank.rank = peer.rank;
-                rank.server_address = peer.address;
-                rank.remote = this->execution.remote;
-                diagnostics->ranks.push_back(std::move(rank));
-            }
         }
 
         void finalizeForForget() noexcept {
@@ -162,16 +153,6 @@ public:
                 owner->completion_cleanup_->enqueue(std::move(ready));
         }
 
-        static void observeResponse(TransferRankSnapshot& rank, const RemoteOperationResponsePB& response) noexcept {
-            rank.response_received = true;
-            rank.worker_transfer_status = static_cast<int>(response.transfer_status());
-            rank.response_valid = response.transfer_status() == REMOTE_TRANSFER_STATUS_SUCCESS
-                                  || response.transfer_status() == REMOTE_TRANSFER_STATUS_FAILED
-                                  || response.transfer_status() == REMOTE_TRANSFER_STATUS_TIMEOUT;
-            rank.buffer_safe = response.payload_buffer_safe();
-            if (response.sdk_result_case() == RemoteOperationResponsePB::kSdkFailed)
-                rank.sdk_failed = response.sdk_failed();
-        }
 
         std::exception_ptr freezeAndRetain(const std::exception_ptr& failure) noexcept {
             std::lock_guard<std::mutex> lock(mutex);
@@ -185,7 +166,6 @@ public:
                 frozen->freeze();
                 owner->retainFrozenTask(prepared_slot);
                 marked_failure = std::move(protected_failure);
-                logFrozenTask(*frozen);
                 return marked_failure;
             } catch (...) {
                 std::terminate();
@@ -194,9 +174,7 @@ public:
 
         Impl* owner;
         FrozenTask::ExecutionInfo execution;
-        std::shared_ptr<TransferExecutionDiagnostics> diagnostics;
         std::vector<FunctionRequestPB> requests;
-        std::shared_ptr<PayloadResult> rpc_result;
         std::list<std::shared_ptr<FrozenTask>> prepared_slot;
         std::mutex mutex;
         std::exception_ptr marked_failure;
@@ -207,52 +185,14 @@ public:
             try {
                 std::rethrow_exception(failure);
             } catch (const StorageOperationCompletionUnknown& error) {
-                diagnostics->failure_reason = kQuarantineReasons.at(static_cast<size_t>(error.reason()));
-                if (rpc_result) {
-                    for (const auto& snapshot : rpc_result->rankSnapshots()) {
-                        if (snapshot.rank >= diagnostics->ranks.size())
-                            continue;
-                        auto& rank = diagnostics->ranks[snapshot.rank];
-                        rank.server_address = snapshot.server_address;
-                        switch (snapshot.dispatch_state) {
-                            case BroadcastDispatchState::NOT_SUBMITTED:
-                                rank.dispatch_state = TransferRpcDispatchState::NOT_SUBMITTED;
-                                break;
-                            case BroadcastDispatchState::POSSIBLY_SUBMITTED:
-                                rank.dispatch_state = TransferRpcDispatchState::POSSIBLY_SUBMITTED;
-                                break;
-                            case BroadcastDispatchState::SUBMITTED:
-                                rank.dispatch_state = TransferRpcDispatchState::SUBMITTED;
-                                break;
-                        }
-                        rank.dispatch_error = snapshot.dispatch_error;
-                        rank.cq_received = snapshot.cq_received;
-                        rank.cq_ok = snapshot.cq_ok;
-                        rank.grpc_code = snapshot.grpc_code;
-                        rank.grpc_message = snapshot.grpc_message;
-                        if (snapshot.cq_received && snapshot.cq_ok && snapshot.grpc_code
-                            && *snapshot.grpc_code == grpc::StatusCode::OK && snapshot.response) {
-                            rank.response_received = true;
-                            if (snapshot.response->has_remote_response())
-                                observeResponse(rank, snapshot.response->remote_response());
-                        }
-                    }
-                }
                 rtp_llm::TransferResult result(
                     ErrorInfo(ErrorCode::TRANSFER_COMPLETION_UNKNOWN, error.what()));
-                result.execution_diagnostics = diagnostics;
                 owner->populateReadDescriptors(execution, requests);
                 return std::make_shared<FrozenTask>(FrozenTask::prepare(std::move(execution)),
                                                    std::move(result), std::move(cleanup));
             }
         }
 
-        static void logFrozenTask(const FrozenTask& task) noexcept {
-            try {
-                RTP_LLM_LOG_WARNING("KVCM READ frozen: %s", task.debugString().c_str());
-            } catch (...) {
-            }
-        }
     };
     using ReadCompletionContextPtr = std::shared_ptr<ReadCompletionContext>;
 
@@ -1028,7 +968,7 @@ public:
             report.dismiss();
             return;
         }
-        (void)dispatchRequests(payload_requests, request, source_may_be_touched, sdk_failed, nullptr, completion_context);
+        (void)dispatchRequests(payload_requests, request, source_may_be_touched, sdk_failed);
         source_may_be_touched = false;
         (void)remainingTimeout(request, "after read");
         // StorageBackend's task still owns the destination pins here. Publish
@@ -2717,7 +2657,7 @@ private:
                               bool& source_may_be_touched, PrepareCompletion prepare_completion,
                               ReadCompletionContextPtr completion_context = nullptr) {
         if (broadcast_manager_) {
-            auto result = dispatchRemoteRequests(requests, request, source_may_be_touched, completion_context);
+            auto result = dispatchRemoteRequests(requests, request, source_may_be_touched);
             onPayloadDone(result, prepare_completion([this, result](bool& touched, bool& sdk_failed) {
                               return collectResponses(result, touched, sdk_failed);
                           }));
@@ -2760,10 +2700,10 @@ private:
                                     ? std::shared_ptr<std::vector<FunctionRequestPB>>(completion_context, &completion_context->requests)
                                     : std::make_shared<std::vector<FunctionRequestPB>>(std::move(requests));
         std::function<void()> run =
-            [this, payload_requests = std::move(payload_requests), &request, local, complete, execution, completion_context]() mutable {
+            [this, payload_requests = std::move(payload_requests), &request, local, complete, execution]() mutable {
                 try {
                     local->responses = dispatchRequests(*payload_requests, request, local->touched, local->sdk_failed,
-                                                        execution, completion_context);
+                                                        execution);
                 } catch (...) {
                     local->error = std::current_exception();
                 }
@@ -2796,8 +2736,7 @@ private:
 
     std::shared_ptr<PayloadResult> dispatchRemoteRequests(std::vector<FunctionRequestPB>& requests,
                                                           const StorageRequest&           storage_request,
-                                                          bool&                           source_may_be_touched,
-                                                          const ReadCompletionContextPtr&       completion_context = nullptr) {
+                                                          bool&                           source_may_be_touched) {
         const int timeout_ms = remainingTimeout(storage_request, "before payload dispatch");
         for (auto& request : requests) {
             request.mutable_remote_request()->set_timeout_ms(timeout_ms);
@@ -2816,14 +2755,8 @@ private:
             return stub->AsyncExecuteFunction(context.get(), request, queue);
         };
         source_may_be_touched = true;
-        if (completion_context && !decode_publication_enabled_) {
-            for (auto& rank : completion_context->diagnostics->ranks)
-                rank.dispatch_state = TransferRpcDispatchState::POSSIBLY_SUBMITTED;
-        }
         auto result = broadcast_manager_->broadcast<FunctionRequestPB, FunctionResponsePB>(
             requests, timeout_ms, rpc_call, storage_request.request_id, direction, /*fatal_on_error=*/false);
-        if (completion_context && !decode_publication_enabled_)
-            completion_context->rpc_result = result;
         if (result == nullptr) {
             throw StorageOperationCompletionUnknown("KVCM broadcast dispatch failed",
                                                     StorageQuarantineReason::RPC_ERROR);
@@ -2888,10 +2821,9 @@ private:
                                                      const StorageRequest&           storage_request,
                                                      bool&                           source_may_be_touched,
                                                      bool&                           sdk_failed,
-                                                     ReadExecutionPtr                execution = nullptr,
-                                                     const ReadCompletionContextPtr&       completion_context = nullptr) {
+                                                     ReadExecutionPtr                execution = nullptr) {
         if (broadcast_manager_) {
-            auto result = dispatchRemoteRequests(requests, storage_request, source_may_be_touched, completion_context);
+            auto result = dispatchRemoteRequests(requests, storage_request, source_may_be_touched);
             (void)result->waitDone(/*timeout_ms=*/0, /*fatal_on_error=*/false);
             return collectResponses(result, source_may_be_touched, sdk_failed);
         }
@@ -2914,11 +2846,7 @@ private:
             requests.front().mutable_remote_request()->set_timeout_ms(timeout_ms);
             block_tree_cache_detail::ScopeRollback collect_sdk_failure([&] {
                 sdk_failed = sdk_failed || local_response.sdk_failed();
-                if (completion_context && !decode_publication_enabled_)
-                    ReadCompletionContext::observeResponse(completion_context->diagnostics->ranks.front(), local_response);
             });
-            if (completion_context && !decode_publication_enabled_)
-                completion_context->diagnostics->ranks.front().dispatch_state = TransferRpcDispatchState::SUBMITTED;
             unsubmitted.dismiss();
             executePayload(requests.front().remote_request(), local_response,
                            *storage_request.transfer_task, &source_may_be_touched, std::move(execution));

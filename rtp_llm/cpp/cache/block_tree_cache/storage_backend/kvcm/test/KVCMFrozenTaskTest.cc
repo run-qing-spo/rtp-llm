@@ -105,16 +105,6 @@ TEST(KVCMFrozenTaskTest, LocalUnknownIsRetainedBeforeCallbackAndKeepsOriginalTra
         EXPECT_EQ(descriptor.targets.front().block, environment.block_id);
         EXPECT_EQ(record->failure().status.code(), ErrorCode::TRANSFER_COMPLETION_UNKNOWN);
         EXPECT_FALSE(record->failure().buffer_safe);
-        const auto diagnostic = record->failure().execution_diagnostics;
-        ASSERT_NE(diagnostic, nullptr);
-        EXPECT_EQ(std::get<std::string>(diagnostic->trace_id), "block_tree_read_1");
-        EXPECT_FALSE(diagnostic->failure_reason.empty());
-        ASSERT_EQ(diagnostic->ranks.size(), 1u);
-        const auto& rank = diagnostic->ranks.front();
-        EXPECT_EQ(rank.rank, 0u);
-        EXPECT_FALSE(rank.remote);
-        EXPECT_FALSE(rank.cq_received);
-        EXPECT_FALSE(rank.grpc_code.has_value());
         EXPECT_EQ(environment.device_pool->treeRefCount(environment.block_id), 1u);
     }
 }
@@ -194,40 +184,17 @@ TEST(KVCMFrozenTaskTest, RpcFailureRetainsOriginalParticipantsAndCompletedRankEv
         EXPECT_EQ(environment.device_pool->treeRefCount(environment.block_id), 1u);
         const auto trace = std::get<std::string>(execution.trace_id);
         EXPECT_EQ(trace, "block_tree_read_1");
-        const auto diagnostic = record->failure().execution_diagnostics;
-        ASSERT_NE(diagnostic, nullptr);
-        EXPECT_EQ(std::get<std::string>(diagnostic->trace_id), trace);
-        EXPECT_EQ(diagnostic->failure_reason, code == grpc::StatusCode::DEADLINE_EXCEEDED ?
-                                                  "rpc_timeout" : "rpc_error");
-        ASSERT_EQ(diagnostic->ranks.size(), 2u);
         for (size_t rank = 0; rank < 2; ++rank) {
             const auto requests = snapshotRequests(rank == 0 ? healthy : failed);
             ASSERT_EQ(requests.size(), 1u);
             EXPECT_EQ(requests.front().trace_id(), trace);
             EXPECT_EQ(execution.expected_peers[rank].rank, rank);
             EXPECT_EQ(execution.expected_peers[rank].address, addresses[rank]);
-            const auto& snapshot = diagnostic->ranks[rank];
-            EXPECT_EQ(snapshot.rank, rank);
-            EXPECT_EQ(snapshot.server_address, addresses[rank]);
-            EXPECT_TRUE(snapshot.remote);
-            EXPECT_EQ(snapshot.dispatch_state, TransferRpcDispatchState::SUBMITTED);
-            EXPECT_TRUE(snapshot.cq_received);
-            EXPECT_TRUE(snapshot.cq_ok);
-            EXPECT_EQ(snapshot.grpc_code, std::optional<int>{rank == 0 ? grpc::StatusCode::OK : code});
-            EXPECT_EQ(snapshot.response_received, rank == 0);
-            EXPECT_EQ(snapshot.response_valid, rank == 0);
-            EXPECT_EQ(snapshot.buffer_safe, rank == 0 ? std::optional<bool>{true} : std::nullopt);
             const auto& descriptor = execution.descriptors[rank];
             EXPECT_EQ(descriptor.rank, std::optional<size_t>{rank});
             EXPECT_EQ(descriptor.group_tag, "default");
             EXPECT_EQ(descriptor.source_uri, "rank-" + std::to_string(rank) + "-uri");
         }
-        EXPECT_EQ(diagnostic->ranks[0].worker_transfer_status,
-                  std::optional<int>{REMOTE_TRANSFER_STATUS_SUCCESS});
-        // The fake worker does not send sdk_failed; absence stays explicit.
-        EXPECT_FALSE(diagnostic->ranks[0].sdk_failed.has_value());
-        EXPECT_FALSE(diagnostic->ranks[1].worker_transfer_status.has_value());
-        EXPECT_FALSE(diagnostic->ranks[1].sdk_failed.has_value());
     }
 }
 

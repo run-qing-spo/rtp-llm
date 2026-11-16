@@ -526,9 +526,6 @@ TEST(KVCMCompletionQueryTest, QueryDoesNotThawAndRecoveryWaitsForAllOriginalRpcP
     ASSERT_EQ(record->execution().expected_peers.size(), 2u);
     EXPECT_EQ(std::get<std::string>(record->execution().trace_id), "block_tree_read_1");
     const auto failure_message = record->failure().status.ToString();
-    const auto failure_diagnostics = record->failure().execution_diagnostics;
-    ASSERT_NE(failure_diagnostics, nullptr);
-    const auto original_ranks = failure_diagnostics->ranks;
     const auto references = environment.device_pool->refCount(environment.block_id);
     auto forget_rank_zero = [&] {
         auto stub = RpcService::NewStub(grpc::CreateChannel(addresses.front(), grpc::InsecureChannelCredentials()));
@@ -559,7 +556,6 @@ TEST(KVCMCompletionQueryTest, QueryDoesNotThawAndRecoveryWaitsForAllOriginalRpcP
             gate->release();
             ASSERT_TRUE(server0.waitReadCompleted());
         }
-        const auto before_query = record->debugString();
         const auto observed = coordinator->queryTransferCompletion(record->execution(), 2000);
         ASSERT_EQ(observed.ranks.size(), 2u);
         EXPECT_TRUE(observed.error.empty()) << observed.error;
@@ -574,7 +570,6 @@ TEST(KVCMCompletionQueryTest, QueryDoesNotThawAndRecoveryWaitsForAllOriginalRpcP
         EXPECT_EQ(record->snapshot().state, FrozenTask::State::FROZEN);
         EXPECT_TRUE(environment.device_pool->isFrozen(environment.block_id));
         EXPECT_EQ(environment.device_pool->refCount(environment.block_id), references);
-        EXPECT_EQ(record->debugString(), before_query);
         EXPECT_EQ(coordinator->frozenTasks().size(), 1u);
         EXPECT_EQ(cleanup->size(), 0u);
         const auto recovered = recovery.runOnce(2000);
@@ -587,13 +582,6 @@ TEST(KVCMCompletionQueryTest, QueryDoesNotThawAndRecoveryWaitsForAllOriginalRpcP
     }
     EXPECT_EQ(record->failure().status.ToString(), failure_message);
     EXPECT_FALSE(record->failure().buffer_safe);
-    EXPECT_EQ(record->failure().execution_diagnostics, failure_diagnostics);
-    ASSERT_EQ(failure_diagnostics->ranks.size(), original_ranks.size());
-    for (size_t rank = 0; rank < original_ranks.size(); ++rank) {
-        EXPECT_EQ(failure_diagnostics->ranks[rank].grpc_code, original_ranks[rank].grpc_code);
-        EXPECT_EQ(failure_diagnostics->ranks[rank].buffer_safe, original_ranks[rank].buffer_safe);
-        EXPECT_EQ(failure_diagnostics->ranks[rank].worker_transfer_status, original_ranks[rank].worker_transfer_status);
-    }
     const auto replay = recovery.runOnce(2000);
     EXPECT_EQ(replay.queried, 0u);
     EXPECT_EQ(replay.released, 0u);
@@ -610,7 +598,6 @@ TEST(KVCMCompletionQueryTest, QueryDoesNotThawAndRecoveryWaitsForAllOriginalRpcP
         EXPECT_EQ(worker->backend->taskRegistry().queryLocal(std::vector<std::string>{trace}).front(),
                   RegistryState::BUFFER_SAFE);
     }
-    const auto released_debug = record->debugString();
     const auto first_forget = forget_rank_zero();
     ASSERT_EQ(first_forget.completion_forget().entries_size(), 1);
     EXPECT_EQ(first_forget.completion_forget().entries(0).status(), TRANSFER_FORGET_DONE);
@@ -651,9 +638,7 @@ TEST(KVCMCompletionQueryTest, QueryDoesNotThawAndRecoveryWaitsForAllOriginalRpcP
         EXPECT_EQ(worker0->backend->taskRegistry().size(), 1u);
         EXPECT_EQ(worker1->backend->taskRegistry().size(), 1u);
         EXPECT_EQ(record->snapshot().state, FrozenTask::State::RELEASED);
-        EXPECT_EQ(record->debugString(), released_debug);
         EXPECT_EQ(record->failure().status.ToString(), failure_message);
-        EXPECT_EQ(record->failure().execution_diagnostics, failure_diagnostics);
         EXPECT_FALSE(environment.device_pool->isFrozen(environment.block_id));
         EXPECT_EQ(environment.device_pool->refCount(environment.block_id), references - 1);
     }
@@ -682,7 +667,6 @@ TEST(KVCMCompletionQueryTest, QueryDoesNotThawAndRecoveryWaitsForAllOriginalRpcP
     EXPECT_EQ(cleanup->size(), 0u);
     EXPECT_EQ(worker0->backend->taskRegistry().size(), 0u);
     EXPECT_EQ(worker1->backend->taskRegistry().size(), 0u);
-    EXPECT_EQ(record->debugString(), released_debug);
     EXPECT_EQ(environment.device_pool->refCount(environment.block_id), references - 1);
 }
 
@@ -713,9 +697,6 @@ TEST(KVCMCompletionQueryTest, LocalSdkFailuresRecoverOnlyProvenHoldsOnSharedTarg
     std::vector<std::string> messages;
     for (const auto& record : records) {
         EXPECT_FALSE(record->execution().remote);
-        ASSERT_NE(record->failure().execution_diagnostics, nullptr);
-        EXPECT_NE(record->failure().execution_diagnostics->failure_reason, "rpc_error");
-        EXPECT_NE(record->failure().execution_diagnostics->failure_reason, "rpc_timeout");
         messages.push_back(record->failure().status.ToString());
     }
     FrozenTaskRecovery recovery(*cleanup, [manager = worker->manager] { return manager->frozenTasks(); },
@@ -819,9 +800,6 @@ TEST(KVCMCompletionQueryTest, BackgroundRecoveryWaitsForProofAndStopKeepsLatePro
         ASSERT_EQ(records.size(), 1u);
         const auto record = records.front();
         const auto failure_message = record->failure().status.ToString();
-        const auto diagnostics = record->failure().execution_diagnostics;
-        ASSERT_NE(diagnostics, nullptr);
-        const auto failed_ranks = diagnostics->ranks;
         ASSERT_TRUE(waitUntil([record] { return record->recoverySnapshot().query_count >= 2; }));
         const auto pending = record->recoverySnapshot();
         ASSERT_NE(pending.last_query, nullptr);
@@ -858,12 +836,6 @@ TEST(KVCMCompletionQueryTest, BackgroundRecoveryWaitsForProofAndStopKeepsLatePro
         EXPECT_EQ(coordinator->frozenTasks().size(), stop_before_safe ? 1u : 0u);
         EXPECT_EQ(record->failure().status.ToString(), failure_message);
         EXPECT_FALSE(record->failure().buffer_safe);
-        EXPECT_EQ(record->failure().execution_diagnostics, diagnostics);
-        ASSERT_EQ(diagnostics->ranks.size(), failed_ranks.size());
-        for (size_t rank = 0; rank < failed_ranks.size(); ++rank) {
-            EXPECT_EQ(diagnostics->ranks[rank].grpc_code, failed_ranks[rank].grpc_code);
-            EXPECT_EQ(diagnostics->ranks[rank].buffer_safe, failed_ranks[rank].buffer_safe);
-        }
         for (const auto& worker : {worker0, worker1}) {
             EXPECT_EQ(worker->backend->taskRegistry().size(), stop_before_safe ? 1u : 0u);
             EXPECT_EQ(worker->backend->taskRegistry().queryLocal(

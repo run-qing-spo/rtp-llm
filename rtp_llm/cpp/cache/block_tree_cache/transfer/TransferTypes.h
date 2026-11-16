@@ -108,8 +108,6 @@ inline ErrorInfo transferStatusToErrorInfo(TransferStatus status) {
     }
     return ErrorInfo(ErrorCode::UNKNOWN_ERROR, "unknown block transfer status");
 }
-enum class TransferRpcDispatchState { NOT_SUBMITTED, POSSIBLY_SUBMITTED, SUBMITTED };
-
 // Preserve the existing execution identity and its namespace: ordinary transfer
 // uses a numeric trace, while KVCM READ uses the original string from its request.
 using TransferExecutionTrace = std::variant<uint64_t, std::string>;
@@ -121,36 +119,6 @@ inline bool validTransferExecutionTrace(const TransferExecutionTrace& trace) noe
     const auto* remote = std::get_if<std::string>(&trace);
     return remote && !remote->empty();
 }
-
-// A snapshot of one participant in one actual execution. A missing status is
-// unknown, never an implicit successful RPC. Local executions have remote=false.
-struct TransferRankSnapshot {
-    size_t                   rank{0};
-    std::string              server_address;
-    bool                     remote{true};
-    TransferRpcDispatchState dispatch_state{TransferRpcDispatchState::NOT_SUBMITTED};
-    std::string              dispatch_error;
-    bool                     cq_received{false};
-    bool                     cq_ok{false};
-    std::optional<int>       grpc_code;
-    std::string              grpc_message;
-    bool                     response_received{false};
-    bool                     response_valid{false};
-    std::string              response_error;
-    std::optional<int64_t>   worker_error_code;
-    std::string              worker_error_message;
-    std::optional<CacheCopyError> worker_copy_error;
-    std::vector<CacheCopyError>   block_errors;
-    std::optional<bool>           buffer_safe;
-    std::optional<int>            worker_transfer_status;
-    std::optional<bool>           sdk_failed;
-};
-
-struct TransferExecutionDiagnostics {
-    TransferExecutionTrace            trace_id{uint64_t{0}};
-    std::string                       failure_reason;
-    std::vector<TransferRankSnapshot> ranks;
-};
 
 // Results are ordered like the task's descriptors; NONE means the target copy completed,
 // and NOT_EXECUTED means no target was committed to the caller. The copy may
@@ -240,10 +208,6 @@ struct TransferResult {
     // False means unproven, not necessarily in-flight. Business success, error
     // codes and NOT_EXECUTED diagnostics never implicitly grant this proof.
     bool buffer_safe{false};
-    // Leaf execution diagnostics belong to this exact trace. The coordinator
-    // captures them before merging into a parent task; merge() never conflates
-    // snapshots belonging to different executions.
-    std::shared_ptr<const TransferExecutionDiagnostics> execution_diagnostics;
 };
 
 struct HostBufferView {

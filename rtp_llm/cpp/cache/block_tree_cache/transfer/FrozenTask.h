@@ -128,7 +128,6 @@ public:
         return failure_;
     }
     Snapshot    snapshot() const noexcept;
-    std::string debugString() const;
 
 private:
     const ExecutionInfo           execution_;

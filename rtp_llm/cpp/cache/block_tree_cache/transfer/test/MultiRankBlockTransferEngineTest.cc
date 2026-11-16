@@ -747,7 +747,7 @@ TEST_F(MultiRankBlockTransferEngineTest, DispatcherPreservesTaskWireIdentityAcro
     EXPECT_EQ(batches[second_trace], 2u);
 }
 
-TEST_F(MultiRankBlockTransferEngineTest, FrozenExecutionKeepsWireTraceAndSeparateRankEvidence) {
+TEST_F(MultiRankBlockTransferEngineTest, FrozenExecutionKeepsWireTraceAndAggregatedFailure) {
     auto cleanup = std::make_shared<TransferCompletionCleanup>();
     auto state = std::make_shared<MultiRankBlockTransferRpcState>();
     MultiRankBlockTransferRpcConfig failed{true, MemoryOperationResponsePB::IO_FAILED, grpc::Status::OK, state};
@@ -781,32 +781,15 @@ TEST_F(MultiRankBlockTransferEngineTest, FrozenExecutionKeepsWireTraceAndSeparat
     ASSERT_EQ(records.size(), 1u);
     const auto& record = *records.front();
     EXPECT_EQ(std::get<uint64_t>(record.execution().trace_id), trace);
+    EXPECT_EQ(record.failure().status.code(), ErrorCode::TRANSFER_COMPLETION_UNKNOWN);
+    EXPECT_NE(record.failure().status.ToString().find("rank zero disk failure"), std::string::npos);
+    EXPECT_NE(record.failure().status.ToString().find("rank=0"), std::string::npos);
+    EXPECT_EQ(record.failure().block_errors, std::vector<CacheCopyError>{CacheCopyError::RPC_FAILED});
     EXPECT_EQ(record.execution().parent_trace_id, 5678u);
     EXPECT_EQ(record.execution().workflow_id, 1234u);
     EXPECT_EQ(record.execution().request_id, 42);
     EXPECT_EQ(record.execution().operation, "evict");
     ASSERT_EQ(record.execution().expected_peers.size(), 2u);
-    const auto diagnostics = record.failure().execution_diagnostics;
-    ASSERT_NE(diagnostics, nullptr);
-    EXPECT_EQ(diagnostics->trace_id, record.execution().trace_id);
-    ASSERT_EQ(diagnostics->ranks.size(), 2u);
-    const auto& first = diagnostics->ranks[0];
-    EXPECT_EQ(first.rank, 0u);
-    EXPECT_TRUE(first.cq_received);
-    EXPECT_EQ(first.dispatch_state, TransferRpcDispatchState::SUBMITTED);
-    EXPECT_EQ(first.grpc_code, grpc::StatusCode::OK);
-    EXPECT_TRUE(first.response_valid);
-    EXPECT_EQ(first.worker_error_code, static_cast<int64_t>(ErrorCode::EXECUTION_EXCEPTION));
-    EXPECT_EQ(first.worker_error_message, "rank zero disk failure");
-    EXPECT_EQ(first.worker_copy_error, CacheCopyError::IO_FAILED);
-    const auto& second = diagnostics->ranks[1];
-    EXPECT_EQ(second.rank, 1u);
-    EXPECT_TRUE(second.cq_received);
-    EXPECT_EQ(second.grpc_code, grpc::StatusCode::UNAVAILABLE);
-    EXPECT_EQ(second.grpc_message, "lost reply");
-    EXPECT_FALSE(second.response_received);
-    EXPECT_FALSE(second.worker_error_code.has_value());
-    EXPECT_FALSE(second.buffer_safe.has_value());
     {
         std::lock_guard<std::mutex> lock(state->mutex);
         ASSERT_EQ(state->requests.size(), 2u);
@@ -855,13 +838,6 @@ TEST_F(MultiRankBlockTransferEngineTest, SubscriptionFailureFreezesBeforeLateRpc
     EXPECT_EQ(callbacks, 1u);
     auto records = dispatcher->frozenTasks();
     ASSERT_EQ(records.size(), 1u);
-    const auto diagnostics = records.front()->failure().execution_diagnostics;
-    ASSERT_NE(diagnostics, nullptr);
-    ASSERT_EQ(diagnostics->ranks.size(), 1u);
-    EXPECT_EQ(diagnostics->ranks[0].dispatch_state, TransferRpcDispatchState::SUBMITTED);
-    EXPECT_FALSE(diagnostics->ranks[0].cq_received);
-    EXPECT_FALSE(diagnostics->ranks[0].grpc_code.has_value());
-    EXPECT_FALSE(diagnostics->ranks[0].response_received);
     // No automatic thaw: this UNKNOWN record stays frozen even if the worker
     // later succeeds. Explicit release is exercised separately by FrozenTaskTest.
     EXPECT_EQ(pool->treeRefCount(target), 1u);

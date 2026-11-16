@@ -175,8 +175,6 @@ TEST_F(FrozenExecutionTest, ActualExecutionTraceOwnsDeduplicatedTargetsBeforeBus
     EXPECT_EQ(frozen[0]->execution().expected_rank_count, 1u);
     EXPECT_EQ(frozen[0]->execution().descriptors.size(), 2u);
     EXPECT_EQ(frozen[0]->snapshot().target_block_count, 1u);
-    ASSERT_NE(frozen[0]->failure().execution_diagnostics, nullptr);
-    EXPECT_EQ(std::get<uint64_t>(frozen[0]->failure().execution_diagnostics->trace_id), executor->submitted_traces[0]);
     EXPECT_TRUE(host_->isAllocated(target));
     EXPECT_EQ(host_->treeRefCount(target), 1u);
     frozen[0]->completeRecovery(*cleanup);

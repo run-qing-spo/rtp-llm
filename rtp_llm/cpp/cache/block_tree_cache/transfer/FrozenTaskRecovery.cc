@@ -95,14 +95,8 @@ void logReleased(const FrozenTask& task) noexcept {
     try {
         const auto snapshot = task.snapshot();
         const auto duration_ms = std::max<int64_t>(0, snapshot.released_at_us - snapshot.frozen_at_us) / 1000;
-        try {
-            const auto description = task.debugString();
-            RTP_LLM_LOG_INFO("FrozenTask recovery released frozen_duration_ms=%lld %s",
-                             static_cast<long long>(duration_ms), description.c_str());
-        } catch (...) {
-            RTP_LLM_LOG_INFO("FrozenTask recovery released frozen_duration_ms=%lld (diagnostics unavailable)",
-                             static_cast<long long>(duration_ms));
-        }
+        RTP_LLM_LOG_INFO("FrozenTask recovery released frozen_duration_ms=%lld",
+                         static_cast<long long>(duration_ms));
     } catch (...) {
         // Release and its count are already complete; logging cannot repeat it.
     }

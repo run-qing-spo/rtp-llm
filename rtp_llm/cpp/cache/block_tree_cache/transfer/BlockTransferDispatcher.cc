@@ -64,26 +64,6 @@ struct BlockTransferDispatcher::CoordinatedExecution {
             return;
         try {
             if (result.status.code() == ErrorCode::TRANSFER_COMPLETION_UNKNOWN) {
-                if (!result.execution_diagnostics) {
-                    auto diagnostics = std::make_shared<TransferExecutionDiagnostics>();
-                    diagnostics->trace_id = execution.trace_id;
-                    for (const auto& peer : execution.expected_peers) {
-                        TransferRankSnapshot rank;
-                        rank.rank = peer.rank;
-                        rank.server_address = peer.address;
-                        rank.remote = execution.remote;
-                        rank.dispatch_state = TransferRpcDispatchState::POSSIBLY_SUBMITTED;
-                        if (!execution.remote) {
-                            rank.worker_error_code = static_cast<int64_t>(result.status.code());
-                            rank.worker_error_message = result.status.ToString();
-                            rank.worker_copy_error = result.copy_error;
-                            rank.block_errors = result.block_errors;
-                            rank.buffer_safe = result.buffer_safe;
-                        }
-                        diagnostics->ranks.push_back(std::move(rank));
-                    }
-                    result.execution_diagnostics = std::move(diagnostics);
-                }
                 // All allocation/validation precedes the first frozen hold. If
                 // preparation fails, never turn an unprotected UNKNOWN into a
                 // business failure that would release the ordinary references.
@@ -92,11 +72,6 @@ struct BlockTransferDispatcher::CoordinatedExecution {
                 prepared_slot.front() = frozen;
                 frozen->freeze();
                 owner->retainFrozenTask(prepared_slot);
-                try {
-                    RTP_LLM_LOG_WARNING("transfer frozen: %s", frozen->debugString().c_str());
-                } catch (...) {
-                    // Diagnostics are best-effort after protection is established.
-                }
             } else {
                 // A known failure can receive its physical proof later. Queue
                 // its identity now; worker forget retains RUNNING evidence.
@@ -328,11 +303,6 @@ void BlockTransferDispatcher::submitCoordinated(TransferTask task,
         } catch (...) {
             // A failed observation cannot prove a submitted execution safe.
         }
-        try {
-            observation_failure.execution_diagnostics = context->executionDiagnostics();
-        } catch (...) {
-            // Keep expected participants as unknown if observation also fails.
-        }
         execution->complete(std::move(observation_failure));
     }
 }
@@ -344,7 +314,7 @@ void BlockTransferDispatcher::retainFrozenTask(std::list<std::shared_ptr<FrozenT
 
 std::vector<std::shared_ptr<FrozenTask>> BlockTransferDispatcher::frozenTasks() const {
     // Keep retired owners alive until the list lock is released, including if
-    // snapshot allocation throws. Existing snapshots still own their diagnostics.
+    // snapshot allocation throws.
     std::list<std::shared_ptr<FrozenTask>>   retired;
     std::vector<std::shared_ptr<FrozenTask>> tasks;
     {

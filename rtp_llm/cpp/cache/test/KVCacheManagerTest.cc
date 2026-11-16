@@ -2288,7 +2288,6 @@ TEST_F(KVCacheManagerTest, FrozenTransferRecoveryObservesLateProofWithoutRepeati
     ASSERT_EQ(records.size(), 1u);
     const auto record = records.front();
     const auto failure = record->failure().status.ToString();
-    const auto diagnostics = record->failure().execution_diagnostics;
     ASSERT_NE(engine->last_proof, nullptr);
     EXPECT_FALSE(record->execution().remote);
     EXPECT_EQ(manager->block_tree_cache_->reclaimer().completion_cleanup_->size(), 0u);
@@ -2306,7 +2305,6 @@ TEST_F(KVCacheManagerTest, FrozenTransferRecoveryObservesLateProofWithoutRepeati
     EXPECT_EQ(pool->referencedBlocksNum(BlockTreeRefType::FROZEN), 0u);
     EXPECT_EQ(record->snapshot().state, FrozenTask::State::RELEASED);
     EXPECT_EQ(record->failure().status.ToString(), failure);
-    EXPECT_EQ(record->failure().execution_diagnostics, diagnostics);
     EXPECT_EQ(settlements, 1u);
     EXPECT_EQ(engine->submitted_batch_count, 1u);
     EXPECT_TRUE(manager->frozenTasks().empty());

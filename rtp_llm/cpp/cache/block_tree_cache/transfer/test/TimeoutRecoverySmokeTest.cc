@@ -331,7 +331,7 @@ protected:
             if (record->snapshot().state == FrozenTask::State::RELEASED) continue;
             const auto request = record->execution().request_id;
             if (!request || *request < first_request || *request >= first_request + static_cast<int64_t>(kRequests)) {
-                ADD_FAILURE() << "cannot map diagnostic trace to this round's disk blocks: " << record->debugString();
+                ADD_FAILURE() << "cannot map diagnostic trace to this round's disk blocks: " << record->execution().trace_id;
                 continue;
             }
             unreleased_evidence_.push_back({std::get<uint64_t>(record->execution().trace_id), *request,
@@ -432,11 +432,11 @@ protected:
         size_t released = 0;
         for (const auto& record : records) {
             if (record->snapshot().state == FrozenTask::State::RELEASED) ++released;
-            EXPECT_EQ(record->snapshot().state, FrozenTask::State::RELEASED) << record->debugString();
+            EXPECT_EQ(record->snapshot().state, FrozenTask::State::RELEASED) << record->execution().trace_id;
             const auto query = record->recoverySnapshot().last_query;
             EXPECT_NE(query, nullptr);
             if (query) {
-                EXPECT_TRUE(query->all_safe) << record->debugString();
+                EXPECT_TRUE(query->all_safe) << record->execution().trace_id;
             }
             EXPECT_EQ(record->failure().status.code(), ErrorCode::TRANSFER_COMPLETION_UNKNOWN);
         }
@@ -571,11 +571,6 @@ protected:
                             return event.write == write && event.offset >= first_offset && event.offset < end_offset
                                    && event.begin < done->rpc_deadline && done->rpc_deadline < event.end;
                         })) ++io_timeouts;
-                    const auto diagnostics = record->failure().execution_diagnostics;
-                    ASSERT_NE(diagnostics, nullptr);
-                    EXPECT_TRUE(std::any_of(diagnostics->ranks.begin(), diagnostics->ranks.end(), [](const auto& row) {
-                        return row.grpc_code && *row.grpc_code == grpc::StatusCode::DEADLINE_EXCEEDED;
-                    })) << record->debugString();
                 }
             }
             std::cout << "natural local timeout smoke: engine=" << (GetParam() ? "workloop" : "legacy")
