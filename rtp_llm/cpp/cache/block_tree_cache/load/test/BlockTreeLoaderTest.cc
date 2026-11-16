@@ -1258,8 +1258,6 @@ TEST(BlockTreeLoaderTest, UnknownDiskCompletionFreezesOnlyItsTargetBeforeHostCom
     EXPECT_FALSE(owner->done());
     const auto frozen_tasks = env->cache->transfer_dispatcher_->frozenTasks();
     ASSERT_EQ(frozen_tasks.size(), 1u);
-    ASSERT_EQ(frozen_tasks.front()->execution().descriptors.size(), 1u);
-    EXPECT_EQ(frozen_tasks.front()->execution().descriptors.front().source_tier, Tier::DISK);
     for (size_t group = 0; group < env->groups.size(); ++group) {
         EXPECT_EQ(env->groups[group]->hostPool()->referencedBlocksNum(BlockTreeRefType::FROZEN), 0u);
         EXPECT_EQ(env->groups[group]->diskPool()->referencedBlocksNum(BlockTreeRefType::FROZEN), 0u);
@@ -1283,7 +1281,7 @@ TEST(BlockTreeLoaderTest, UnknownDiskCompletionFreezesOnlyItsTargetBeforeHostCom
     releaseTargets(refs);
     env->releaseMatch(match);
     env->reclaimAll();
-    for (const auto& target : frozen_tasks.front()->execution().descriptors.front().targets) {
+    for (const auto& target : frozen_tasks.front()->execution().target_blocks) {
         EXPECT_EQ(target.pool->treeRefCount(target.block), 1u);
     }
     frozen_tasks.front()->completeRecovery(*cleanup);

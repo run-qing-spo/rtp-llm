@@ -780,21 +780,17 @@ TEST_F(MultiRankBlockTransferEngineTest, FrozenExecutionKeepsWireTraceAndAggrega
     auto records = dispatcher->frozenTasks();
     ASSERT_EQ(records.size(), 1u);
     const auto& record = *records.front();
-    EXPECT_EQ(std::get<uint64_t>(record.execution().trace_id), trace);
+    EXPECT_EQ(std::stoull(record.execution().trace_id), trace);
     EXPECT_EQ(record.failure().status.code(), ErrorCode::TRANSFER_COMPLETION_UNKNOWN);
     EXPECT_NE(record.failure().status.ToString().find("rank zero disk failure"), std::string::npos);
     EXPECT_NE(record.failure().status.ToString().find("rank=0"), std::string::npos);
     EXPECT_EQ(record.failure().block_errors, std::vector<CacheCopyError>{CacheCopyError::RPC_FAILED});
-    EXPECT_EQ(record.execution().parent_trace_id, 5678u);
-    EXPECT_EQ(record.execution().workflow_id, 1234u);
-    EXPECT_EQ(record.execution().request_id, 42);
-    EXPECT_EQ(record.execution().operation, "evict");
-    ASSERT_EQ(record.execution().expected_peers.size(), 2u);
+    ASSERT_EQ(record.execution().participant_ranks.size(), 2u);
     {
         std::lock_guard<std::mutex> lock(state->mutex);
         ASSERT_EQ(state->requests.size(), 2u);
         for (const auto& request : state->requests) {
-            EXPECT_EQ(request.transfer_trace_id(), std::get<uint64_t>(record.execution().trace_id));
+            EXPECT_EQ(request.transfer_trace_id(), std::stoull(record.execution().trace_id));
             EXPECT_EQ(request.transfer_workflow_id(), 1234u);
             EXPECT_EQ(request.transfer_parent_id(), 5678u);
         }

@@ -23,11 +23,12 @@ TransferCompletionTarget remoteTarget() {
     return {true, {{0, "worker-0:100"}, {1, "worker-1:100"}}};
 }
 
-TransferCompletionForgetResult doneResult(const std::vector<TransferExecutionTrace>& traces) {
+TransferCompletionForgetResult doneResult(const std::vector<TransferCompletionKey>& traces) {
     TransferCompletionForgetResult result;
     for (const auto& trace : traces) {
         TransferCompletionForgetEntryResult entry;
-        entry.trace_id = trace;
+        entry.registry_type = trace.registry_type;
+        entry.trace_id = trace.trace_id;
         entry.all_done = true;
         result.entries.push_back(std::move(entry));
     }
@@ -77,7 +78,7 @@ TEST(TransferCompletionCleanupTest, PreparedNodesRequireExplicitSubmissionAndMov
     }
     EXPECT_EQ(queue->size(), 1u);
     const auto summary = queue->drain([](const auto&, const auto& traces, int) {
-        EXPECT_EQ(traces, (std::vector<TransferExecutionTrace>{uint64_t{1}}));
+        EXPECT_EQ(traces, (std::vector<TransferCompletionKey>{uint64_t{1}}));
         return doneResult(traces);
     }, 10);
     EXPECT_EQ(summary.attempted, 1u);
@@ -101,7 +102,7 @@ TEST(TransferCompletionCleanupTest, PreparedDoesNotRetainQueueAndCanBeEnqueuedIn
     destination.enqueue(std::move(prepared));
     EXPECT_EQ(destination.size(), 1u);
     const auto summary = destination.drain([](const auto&, const auto& traces, int) {
-        EXPECT_EQ(traces, (std::vector<TransferExecutionTrace>{uint64_t{3}}));
+        EXPECT_EQ(traces, (std::vector<TransferCompletionKey>{uint64_t{3}}));
         return doneResult(traces);
     }, 10);
     EXPECT_EQ(summary.forgotten, 1u);
@@ -146,10 +147,10 @@ TEST(TransferCompletionCleanupTest, BatchesByOriginalRoutingAndNeverExceedsProto
             EXPECT_EQ(target.peers[0].address, "worker-0:100");
             EXPECT_EQ(target.peers[1].address, "worker-1:100");
         } else if (!target.remote) {
-            EXPECT_EQ(traces, (std::vector<TransferExecutionTrace>{std::string("1")}));
+            EXPECT_EQ(traces, (std::vector<TransferCompletionKey>{std::string("1")}));
             EXPECT_EQ(target.peers.front().address, "local");
         } else {
-            EXPECT_EQ(traces, (std::vector<TransferExecutionTrace>{uint64_t{1}}));
+            EXPECT_EQ(traces, (std::vector<TransferCompletionKey>{uint64_t{1}}));
             EXPECT_EQ(target.peers.front().address, "another-worker:100");
         }
         return doneResult(traces);
@@ -163,7 +164,7 @@ TEST(TransferCompletionCleanupTest, BatchesByOriginalRoutingAndNeverExceedsProto
 
 TEST(TransferCompletionCleanupTest, PartialSuccessRemovesOnlyConfirmedEntriesAndRetriesNextDrain) {
     auto queue = std::make_shared<Cleanup>();
-    const std::vector<TransferExecutionTrace> traces{uint64_t{1}, std::string("1"), uint64_t{2}};
+    const std::vector<TransferCompletionKey> traces{uint64_t{1}, std::string("1"), uint64_t{2}};
     for (const auto& trace : traces)
         queue->enqueue(queue->prepare(localTarget(), trace));
     size_t calls = 0;
@@ -183,7 +184,7 @@ TEST(TransferCompletionCleanupTest, PartialSuccessRemovesOnlyConfirmedEntriesAnd
     EXPECT_EQ(partial.pending, 2u);
     EXPECT_TRUE(partial.failed);
     const auto retry = queue->drain([](const auto&, const auto& batch, int) {
-        EXPECT_EQ(batch, (std::vector<TransferExecutionTrace>{std::string("1"), uint64_t{2}}));
+        EXPECT_EQ(batch, (std::vector<TransferCompletionKey>{std::string("1"), uint64_t{2}}));
         return doneResult(batch);
     }, 10);
     EXPECT_EQ(retry.forgotten, 2u);
@@ -249,7 +250,7 @@ TEST(TransferCompletionCleanupTest, ReentrantSubmissionsWaitForTheNextDrain) {
     EXPECT_EQ(first.forgotten, 1u);
     EXPECT_EQ(first.pending, 1u);
     const auto second = queue->drain([](const auto&, const auto& traces, int) {
-        EXPECT_EQ(traces, (std::vector<TransferExecutionTrace>{uint64_t{2}}));
+        EXPECT_EQ(traces, (std::vector<TransferCompletionKey>{uint64_t{2}}));
         return doneResult(traces);
     }, 10);
     EXPECT_EQ(second.forgotten, 1u);
@@ -306,7 +307,7 @@ TEST(TransferCompletionCleanupTest, ConcurrentSubmissionRetainsEveryEntryBeyondW
     std::vector<bool> seen(producers * per_producer, false);
     const auto summary = queue->drain([&](const auto&, const auto& traces, int) {
         for (const auto& trace : traces) {
-            const auto index = std::get<uint64_t>(trace) - 1;
+            const auto index = trace.numericId() - 1;
             EXPECT_LT(index, seen.size());
             if (index < seen.size()) {
                 EXPECT_FALSE(seen[index]);

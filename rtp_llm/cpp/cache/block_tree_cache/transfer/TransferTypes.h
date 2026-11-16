@@ -10,7 +10,8 @@
 #include <optional>
 #include <string>
 #include <utility>
-#include <variant>
+#include <charconv>
+#include <stdexcept>
 #include <vector>
 
 #include "rtp_llm/cpp/cache/block_tree_cache/group_set/GroupSetResource.h"
@@ -108,16 +109,54 @@ inline ErrorInfo transferStatusToErrorInfo(TransferStatus status) {
     }
     return ErrorInfo(ErrorCode::UNKNOWN_ERROR, "unknown block transfer status");
 }
-// Preserve the existing execution identity and its namespace: ordinary transfer
-// uses a numeric trace, while KVCM READ uses the original string from its request.
-using TransferExecutionTrace = std::variant<uint64_t, std::string>;
+enum class RegistryType { BLOCK_TRANSFER, KVCM_READ };
 
-inline bool validTransferExecutionTrace(const TransferExecutionTrace& trace) noexcept {
-    if (const auto* numeric = std::get_if<uint64_t>(&trace)) {
-        return *numeric != 0;
+// Routing key for completion query/forget APIs, including mixed-registry batches.
+// Execution records store registry_type and the string trace_id independently.
+struct TransferCompletionKey {
+    RegistryType registry_type{RegistryType::BLOCK_TRANSFER};
+    std::string trace_id;
+
+    TransferCompletionKey() = default;
+    TransferCompletionKey(uint64_t id):
+        registry_type(RegistryType::BLOCK_TRANSFER), trace_id(std::to_string(id)) {}
+    TransferCompletionKey(std::string id):
+        registry_type(RegistryType::KVCM_READ), trace_id(std::move(id)) {}
+    TransferCompletionKey(RegistryType type, std::string id):
+        registry_type(type), trace_id(std::move(id)) {}
+
+    // Only needed at boundaries that still accept the numeric transfer ID.
+    bool numericId(uint64_t& id) const noexcept {
+        if (registry_type != RegistryType::BLOCK_TRANSFER || trace_id.empty())
+            return false;
+        const auto parsed = std::from_chars(trace_id.data(), trace_id.data() + trace_id.size(), id);
+        return parsed.ec == std::errc{} && parsed.ptr == trace_id.data() + trace_id.size()
+               && id != 0 && trace_id.front() != '0';
     }
-    const auto* remote = std::get_if<std::string>(&trace);
-    return remote && !remote->empty();
+    uint64_t numericId() const {
+        uint64_t id = 0;
+        if (!numericId(id))
+            throw std::invalid_argument("invalid numeric transfer registry key");
+        return id;
+    }
+    bool operator==(const TransferCompletionKey& other) const {
+        return registry_type == other.registry_type && trace_id == other.trace_id;
+    }
+    bool operator!=(const TransferCompletionKey& other) const { return !(*this == other); }
+};
+
+inline bool validTransferCompletionKey(RegistryType registry_type, const std::string& trace_id) noexcept {
+    if (registry_type == RegistryType::KVCM_READ)
+        return !trace_id.empty();
+    if (registry_type != RegistryType::BLOCK_TRANSFER || trace_id.empty() || trace_id.front() == '0')
+        return false;
+    uint64_t id = 0;
+    const auto parsed = std::from_chars(trace_id.data(), trace_id.data() + trace_id.size(), id);
+    return parsed.ec == std::errc{} && parsed.ptr == trace_id.data() + trace_id.size() && id != 0;
+}
+
+inline bool validTransferCompletionKey(const TransferCompletionKey& key) noexcept {
+    return validTransferCompletionKey(key.registry_type, key.trace_id);
 }
 
 // Results are ordered like the task's descriptors; NONE means the target copy completed,

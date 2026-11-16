@@ -108,42 +108,42 @@ std::vector<std::shared_ptr<FrozenTask>> BlockTreeReclaimer::frozenTasks() const
 }
 
 
-TransferTaskRegistry::State BlockTreeReclaimer::localTransferCompletion(const TransferExecutionTrace& trace_id) const {
-    if (!validTransferExecutionTrace(trace_id)) {
+TransferTaskRegistry::State BlockTreeReclaimer::localTransferCompletion(const TransferCompletionKey& key) const {
+    if (!validTransferCompletionKey(key)) {
         return TransferTaskRegistry::State::UNKNOWN;
     }
-    if (const auto* transfer_trace = std::get_if<uint64_t>(&trace_id)) {
-        return tree_.localTransferCompletion(*transfer_trace);
+    if (key.registry_type == RegistryType::BLOCK_TRANSFER) {
+        return tree_.localTransferCompletion(key.numericId());
     }
     auto backend = tree_.storageBackend();
     if (backend) {
-        return backend->queryReadCompletion(std::get<std::string>(trace_id));
+        return backend->queryReadCompletion(key.trace_id);
     }
     return TransferTaskRegistry::State::UNKNOWN;
 }
 
 
 TransferTaskRegistry::ForgetResult
-BlockTreeReclaimer::localForgetTransferCompletion(const TransferExecutionTrace& trace_id) const {
+BlockTreeReclaimer::localForgetTransferCompletion(const TransferCompletionKey& key) const {
     using Result = TransferTaskRegistry::ForgetResult;
-    if (!validTransferExecutionTrace(trace_id)) {
+    if (!validTransferCompletionKey(key)) {
         RTP_LLM_LOG_WARNING("completion forget requires a nonempty execution trace");
         return Result::INVALID;
     }
-    if (const auto* trace = std::get_if<uint64_t>(&trace_id))
-        return tree_.forgetLocalTransferCompletion(*trace);
+    if (key.registry_type == RegistryType::BLOCK_TRANSFER)
+        return tree_.forgetLocalTransferCompletion(key.numericId());
     auto backend = tree_.storageBackend();
     if (backend)
-        return backend->forgetReadCompletion(std::get<std::string>(trace_id));
+        return backend->forgetReadCompletion(key.trace_id);
     return Result::FAILED;
 }
 
 
 TransferCompletionForgetResult
 BlockTreeReclaimer::forgetTransferCompletion(const TransferCompletionTarget& target,
-                                        const std::vector<TransferExecutionTrace>& traces, int timeout_ms) const {
+                                        const std::vector<TransferCompletionKey>& traces, int timeout_ms) const {
     return TransferCompletionForget(transfer_broadcast_manager_,
-                                    [this](const TransferExecutionTrace& trace) {
+                                    [this](const TransferCompletionKey& trace) {
                                         return localForgetTransferCompletion(trace);
                                     }).forget(target, traces, timeout_ms);
 }
@@ -152,17 +152,17 @@ BlockTreeReclaimer::forgetTransferCompletion(const TransferCompletionTarget& tar
 TransferCompletionQueryResult BlockTreeReclaimer::queryTransferCompletion(const FrozenTask::ExecutionInfo& execution,
                                                                     int timeout_ms) const {
     TransferCompletionIdentity identity;
+    identity.registry_type       = execution.registry_type;
     identity.trace_id            = execution.trace_id;
-    identity.request_id          = execution.request_id;
-    identity.remote              = execution.remote;
-    identity.expected_rank_count = execution.expected_rank_count;
-    identity.expected_peers.reserve(execution.expected_peers.size());
-    for (const auto& peer : execution.expected_peers) {
+    identity.remote              = execution.uses_rpc;
+    identity.expected_rank_count = execution.participant_ranks.size();
+    identity.expected_peers.reserve(execution.participant_ranks.size());
+    for (const auto& peer : execution.participant_ranks) {
         identity.expected_peers.push_back({peer.rank, peer.address});
     }
     return TransferCompletionQuery(transfer_broadcast_manager_,
-                                   [this](const TransferExecutionTrace& trace_id) {
-                                       return localTransferCompletion(trace_id);
+                                   [this](const TransferCompletionKey& key) {
+                                       return localTransferCompletion(key);
                                    })
         .query(identity, timeout_ms);
 }
@@ -184,10 +184,10 @@ bool BlockTreeReclaimer::executeFunction(BlockTreeReclaimer* owner, int rank, co
             auto result = TransferTaskRegistry::ForgetResult::INVALID;
             switch (key.trace_case()) {
                 case TransferCompletionKeyPB::kTransferTraceId:
-                    result = owner ? owner->localForgetTransferCompletion(TransferExecutionTrace{key.transfer_trace_id()}) : TransferTaskRegistry::ForgetResult::FAILED;
+                    result = owner ? owner->localForgetTransferCompletion(TransferCompletionKey{key.transfer_trace_id()}) : TransferTaskRegistry::ForgetResult::FAILED;
                     break;
                 case TransferCompletionKeyPB::kKvcmTraceId:
-                    result = owner ? owner->localForgetTransferCompletion(TransferExecutionTrace{key.kvcm_trace_id()}) : TransferTaskRegistry::ForgetResult::FAILED;
+                    result = owner ? owner->localForgetTransferCompletion(TransferCompletionKey{key.kvcm_trace_id()}) : TransferTaskRegistry::ForgetResult::FAILED;
                     break;
                 default:
                     RTP_LLM_LOG_WARNING("completion forget key has no trace namespace");
@@ -220,10 +220,10 @@ bool BlockTreeReclaimer::executeFunction(BlockTreeReclaimer* owner, int rank, co
             auto state = TransferTaskRegistry::State::UNKNOWN;
             switch (key.trace_case()) {
                 case TransferCompletionKeyPB::kTransferTraceId:
-                    state = owner ? owner->localTransferCompletion(TransferExecutionTrace{key.transfer_trace_id()}) : TransferTaskRegistry::State::UNKNOWN;
+                    state = owner ? owner->localTransferCompletion(TransferCompletionKey{key.transfer_trace_id()}) : TransferTaskRegistry::State::UNKNOWN;
                     break;
                 case TransferCompletionKeyPB::kKvcmTraceId:
-                    state = owner ? owner->localTransferCompletion(TransferExecutionTrace{key.kvcm_trace_id()}) : TransferTaskRegistry::State::UNKNOWN;
+                    state = owner ? owner->localTransferCompletion(TransferCompletionKey{key.kvcm_trace_id()}) : TransferTaskRegistry::State::UNKNOWN;
                     break;
                 default:
                     break;

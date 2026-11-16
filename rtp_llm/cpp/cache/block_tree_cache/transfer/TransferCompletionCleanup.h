@@ -17,12 +17,12 @@ class TransferCompletionCleanup {
 private:
     struct Entry {
         TransferCompletionTarget target;
-        TransferExecutionTrace   trace_id;
+        TransferCompletionKey   key;
     };
 
 public:
     using Forget = std::function<TransferCompletionForgetResult(
-        const TransferCompletionTarget&, const std::vector<TransferExecutionTrace>&, int)>;
+        const TransferCompletionTarget&, const std::vector<TransferCompletionKey>&, int)>;
 
     class Prepared {
     public:
@@ -51,7 +51,7 @@ public:
 
     // Call before submission, while allocation and validation can still fail.
     // Routing is normalized by original rank.
-    Prepared prepare(TransferCompletionTarget target, TransferExecutionTrace trace_id);
+    Prepared prepare(TransferCompletionTarget target, TransferCompletionKey key);
 
     // Moves the preallocated node at most once; empty/moved nodes are harmless.
     // Destruction of Prepared alone never submits cleanup.

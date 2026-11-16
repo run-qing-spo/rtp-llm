@@ -22,10 +22,10 @@ public:
     bool startFrozenTaskRecovery();
     void stopFrozenTaskRecovery() noexcept;
     std::vector<std::shared_ptr<FrozenTask>> frozenTasks() const;
-    TransferTaskRegistry::State localTransferCompletion(const TransferExecutionTrace&) const;
-    TransferTaskRegistry::ForgetResult localForgetTransferCompletion(const TransferExecutionTrace&) const;
+    TransferTaskRegistry::State localTransferCompletion(const TransferCompletionKey&) const;
+    TransferTaskRegistry::ForgetResult localForgetTransferCompletion(const TransferCompletionKey&) const;
     TransferCompletionQueryResult queryTransferCompletion(const FrozenTask::ExecutionInfo&, int) const;
-    TransferCompletionForgetResult forgetTransferCompletion(const TransferCompletionTarget&, const std::vector<TransferExecutionTrace>&, int) const;
+    TransferCompletionForgetResult forgetTransferCompletion(const TransferCompletionTarget&, const std::vector<TransferCompletionKey>&, int) const;
     static bool executeFunction(BlockTreeReclaimer*, int rank, const FunctionRequestPB&, FunctionResponsePB&);
     static bool validConfig(int64_t interval, int64_t timeout);
 private:

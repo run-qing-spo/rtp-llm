@@ -2289,7 +2289,7 @@ TEST_F(KVCacheManagerTest, FrozenTransferRecoveryObservesLateProofWithoutRepeati
     const auto record = records.front();
     const auto failure = record->failure().status.ToString();
     ASSERT_NE(engine->last_proof, nullptr);
-    EXPECT_FALSE(record->execution().remote);
+    EXPECT_FALSE(record->execution().uses_rpc);
     EXPECT_EQ(manager->block_tree_cache_->reclaimer().completion_cleanup_->size(), 0u);
     FrozenTaskRecovery recovery(*manager->block_tree_cache_->reclaimer().completion_cleanup_,
                                 [&] { return manager->frozenTasks(); },
@@ -2372,7 +2372,7 @@ TEST_F(KVCacheManagerTest, BackgroundRecoveryReclaimsLocalTargetsAndPublishesCap
     EXPECT_EQ(settlements, 1u);
     EXPECT_EQ(engine->submitted_batch_count, 1u);
     EXPECT_EQ(records.front()->failure().status.code(), ErrorCode::TRANSFER_COMPLETION_UNKNOWN);
-    const auto trace = std::get<uint64_t>(records.front()->execution().trace_id);
+    const auto trace = std::stoull(records.front()->execution().trace_id);
     std::weak_ptr<FrozenTask> weak_record = records.front();
     records.clear();
     // Only the next background enumeration may prune the managed record; this
@@ -2628,11 +2628,11 @@ TEST_F(KVCacheManagerTest, CompletionQueryPreservesEvidenceNamespacesAndNeverSub
     }
 
     FrozenTask::ExecutionInfo execution;
-    execution.remote = false;
-    execution.expected_rank_count = 1;
-    execution.expected_peers = {{0, "local"}};
+    execution.uses_rpc = false;
+
+    execution.participant_ranks = {{0, "local"}};
     for (const uint64_t trace : {running_trace, safe_trace}) {
-        execution.trace_id = trace;
+        execution.trace_id = std::to_string(trace);
         const auto result = manager->queryTransferCompletion(execution, 1000);
         ASSERT_EQ(result.ranks.size(), 1u);
         EXPECT_EQ(result.trace_id, execution.trace_id);
@@ -2644,6 +2644,7 @@ TEST_F(KVCacheManagerTest, CompletionQueryPreservesEvidenceNamespacesAndNeverSub
         EXPECT_FALSE(result.ranks.front().cq_received);
         EXPECT_FALSE(result.ranks.front().grpc_code.has_value());
     }
+    execution.registry_type = RegistryType::KVCM_READ;
     execution.trace_id = std::to_string(safe_trace);
     const auto missing_backend = manager->queryTransferCompletion(execution, 1000);
     ASSERT_EQ(missing_backend.ranks.size(), 1u);

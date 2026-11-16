@@ -44,17 +44,18 @@ BlockIdxType hold(const std::shared_ptr<RecoveryPool>& pool) {
     return *block;
 }
 
-std::shared_ptr<FrozenTask> makeTask(TransferExecutionTrace trace, const std::shared_ptr<RecoveryPool>& pool,
+std::shared_ptr<FrozenTask> makeTask(TransferCompletionKey trace, const std::shared_ptr<RecoveryPool>& pool,
                                     BlockIdxType block, bool remote = false,
                                     CacheCopyError error = CacheCopyError::COPY_FAILED) {
     FrozenTask::ExecutionInfo execution;
-    execution.trace_id = std::move(trace);
-    execution.operation = "load";
-    execution.remote = remote;
-    execution.expected_peers = remote ? std::vector<FrozenTask::TransferParticipant>{{0, "worker-0"}, {1, "worker-1"}} :
+    execution.registry_type = trace.registry_type;
+    execution.trace_id = std::move(trace.trace_id);
+
+    execution.uses_rpc = remote;
+    execution.participant_ranks = remote ? std::vector<FrozenTask::TransferParticipant>{{0, "worker-0"}, {1, "worker-1"}} :
                                         std::vector<FrozenTask::TransferParticipant>{{0, "local"}};
-    execution.expected_rank_count = execution.expected_peers.size();
-    execution.descriptors.push_back({0, 0, Tier::REMOTE, Tier::DEVICE, {}, {{pool, block, 0}}});
+
+    execution.target_blocks.push_back({pool, block});
     TransferResult failure(ErrorInfo(ErrorCode::TRANSFER_COMPLETION_UNKNOWN, "original business failure"), error);
     return std::make_shared<FrozenTask>(FrozenTask::prepare(std::move(execution)), std::move(failure));
 }
@@ -62,14 +63,15 @@ std::shared_ptr<FrozenTask> makeTask(TransferExecutionTrace trace, const std::sh
 TransferCompletionQueryResult proof(const FrozenTask::ExecutionInfo& execution,
                                     State last_state = State::BUFFER_SAFE) {
     TransferCompletionQueryResult result;
+    result.registry_type = execution.registry_type;
     result.trace_id = execution.trace_id;
     result.all_safe = last_state == State::BUFFER_SAFE;
-    for (const auto& peer : execution.expected_peers) {
+    for (const auto& peer : execution.participant_ranks) {
         TransferCompletionRankResult row;
         row.rank = peer.rank;
         row.server_address = peer.address;
-        row.state = peer.rank + 1 == execution.expected_rank_count ? last_state : State::BUFFER_SAFE;
-        if (execution.remote) {
+        row.state = peer.rank + 1 == execution.participant_ranks.size() ? last_state : State::BUFFER_SAFE;
+        if (execution.uses_rpc) {
             row.cq_received = true;
             row.cq_ok = true;
             row.grpc_code = 0;
@@ -92,19 +94,20 @@ TEST(FrozenTaskRecoveryTest, LocalNumericAndStringProofsRecoverNonRpcFailuresWit
     TransferTaskRegistry kvcm;
     ASSERT_TRUE(ordinary.begin(uint64_t{71}));
     ASSERT_TRUE(kvcm.begin(std::string("71")));
-    TransferCompletionQuery local(nullptr, [&](const TransferExecutionTrace& trace) {
-        if (const auto* numeric = std::get_if<uint64_t>(&trace))
-            return ordinary.queryLocal(std::vector<uint64_t>{*numeric}).front();
-        return kvcm.queryLocal(std::vector<std::string>{std::get<std::string>(trace)}).front();
+    TransferCompletionQuery local(nullptr, [&](const TransferCompletionKey& trace) {
+        if (trace.registry_type == RegistryType::BLOCK_TRANSFER)
+            return ordinary.queryLocal(std::vector<uint64_t>{trace.numericId()}).front();
+        return kvcm.queryLocal(std::vector<std::string>{trace.trace_id}).front();
     });
     FrozenTaskRecovery recovery(*cleanup, [&] { return std::vector<std::shared_ptr<FrozenTask>>{first, second}; },
                                 [&](const auto& execution, int timeout) {
                                     TransferCompletionIdentity identity;
+                                    identity.registry_type = execution.registry_type;
                                     identity.trace_id = execution.trace_id;
-                                    identity.request_id = execution.request_id;
-                                    identity.remote = execution.remote;
-                                    identity.expected_rank_count = execution.expected_rank_count;
-                                    for (const auto& peer : execution.expected_peers)
+
+                                    identity.remote = execution.uses_rpc;
+                                    identity.expected_rank_count = execution.participant_ranks.size();
+                                    for (const auto& peer : execution.participant_ranks)
                                         identity.expected_peers.push_back({peer.rank, peer.address});
                                     return local.query(identity, timeout);
                                 });
@@ -167,8 +170,8 @@ TEST(FrozenTaskRecoveryTest, InconsistentOrMismatchedInjectedProofNeverReleasesT
         [&](const auto& execution, int) {
             auto result = proof(execution);
             switch (malformed) {
-                case 0: result.trace_id = std::string("91"); break;
-                case 1: result.trace_id = uint64_t{92}; break;
+                case 0: result.registry_type = RegistryType::KVCM_READ; result.trace_id = std::string("91"); break;
+                case 1: result.trace_id = std::string("92"); break;
                 case 2: result.ranks.pop_back(); break;
                 case 3: result.ranks[1].rank = 0; break;
                 case 4: result.ranks.push_back(result.ranks.back()); break;
@@ -238,12 +241,12 @@ TEST(FrozenTaskRecoveryTest, ConfirmedMissingReleasesAndForgetsEveryParticipantW
         ++forget_calls;
         EXPECT_TRUE(target.remote);
         EXPECT_EQ(target.peers.size(), 2u);
-        EXPECT_EQ(traces, (std::vector<TransferExecutionTrace>{uint64_t{92}}));
+        EXPECT_EQ(traces, (std::vector<TransferCompletionKey>{uint64_t{92}}));
         EXPECT_EQ(completed.forget(uint64_t{92}), TransferTaskRegistry::ForgetResult::DONE);
         EXPECT_EQ(banned.forget(uint64_t{92}), TransferTaskRegistry::ForgetResult::DONE);
         TransferCompletionForgetResult result;
         TransferCompletionForgetEntryResult entry;
-        entry.trace_id = uint64_t{92};
+        entry.trace_id = std::string("92");
         entry.all_done = true;
         result.entries.push_back(std::move(entry));
         return result;
@@ -272,7 +275,7 @@ TEST(FrozenTaskRecoveryTest, QueryAndSourceExceptionsDoNotPreventLaterTasksOrPas
             throw std::runtime_error("source unavailable");
         return tasks;
     }, [&](const auto& execution, int) {
-        const auto trace = std::get<uint64_t>(execution.trace_id);
+        const auto trace = std::stoull(execution.trace_id);
         if (query_fails && trace == 1)
             throw std::runtime_error("query unavailable");
         if (query_fails && trace == 2)
@@ -309,7 +312,7 @@ TEST(FrozenTaskRecoveryTest, SharedBlockRemainsHeldUntilEachExecutionHasSafeProo
     bool second_safe = false;
     FrozenTaskRecovery recovery(*cleanup, [&] { return std::vector<std::shared_ptr<FrozenTask>>{first, second}; },
         [&](const auto& execution, int) {
-            return proof(execution, std::get<uint64_t>(execution.trace_id) == 1 || second_safe ?
+            return proof(execution, std::stoull(execution.trace_id) == 1 || second_safe ?
                                         State::BUFFER_SAFE : State::RUNNING);
         });
     EXPECT_EQ(recovery.runOnce(1000).released, 1u);
@@ -421,7 +424,6 @@ TEST(FrozenTaskRecoveryTest, InvalidTimeoutAndNonFrozenRecordsNeverInvokeQuery) 
     EXPECT_EQ(queries, 1u);
     EXPECT_EQ(prepared->snapshot().state, FrozenTask::State::PREPARED);
 }
-
 
 template<typename Predicate>
 bool waitForRecoveryCondition(Predicate predicate) {

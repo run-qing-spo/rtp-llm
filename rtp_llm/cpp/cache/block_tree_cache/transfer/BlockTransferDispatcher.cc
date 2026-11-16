@@ -51,11 +51,11 @@ struct BlockTransferDispatcher::CoordinatedExecution {
         prepared_slot.emplace_back();
         if (owner->completion_cleanup_) {
             TransferCompletionTarget target;
-            target.remote = this->execution.remote;
-            target.peers.reserve(this->execution.expected_peers.size());
-            for (const auto& peer : this->execution.expected_peers)
+            target.remote = this->execution.uses_rpc;
+            target.peers.reserve(this->execution.participant_ranks.size());
+            for (const auto& peer : this->execution.participant_ranks)
                 target.peers.push_back({peer.rank, peer.address});
-            cleanup = owner->completion_cleanup_->prepare(std::move(target), this->execution.trace_id);
+            cleanup = owner->completion_cleanup_->prepare(std::move(target), TransferCompletionKey{this->execution.registry_type, this->execution.trace_id});
         }
     }
 
@@ -217,51 +217,33 @@ BlockTransferDispatcher::executeMultiRank(TransferTask task, const char* complet
 }
 
 FrozenTask::ExecutionInfo
-BlockTransferDispatcher::describeExecution(const TransferTask& task, const char* completion_operation) const {
+BlockTransferDispatcher::describeExecution(const TransferTask& task) const {
     FrozenTask::ExecutionInfo info;
-    info.trace_id = task.traceId();
-    info.operation = completion_operation ? completion_operation : "transfer";
-    info.request_id = task.requestId();
-    info.workflow_id = task.workflowId();
-    info.parent_trace_id = task.parentTraceId();
-    info.remote = multi_rank_engine_ != nullptr;
+    info.registry_type = RegistryType::BLOCK_TRANSFER;
+    info.trace_id = std::to_string(task.traceId());
+    info.uses_rpc = multi_rank_engine_ != nullptr;
     if (multi_rank_engine_) {
         const auto addresses = multi_rank_engine_->participantAddresses();
         for (size_t rank = 0; rank < addresses.size(); ++rank)
-            info.expected_peers.push_back({rank, addresses[rank]});
+            info.participant_ranks.push_back({rank, addresses[rank]});
     } else {
-        info.expected_peers.push_back({0, "local"});
+        info.participant_ranks.push_back({0, "local"});
     }
-    info.expected_rank_count = info.expected_peers.size();
     const auto& groups = multi_rank_engine_ ? multi_rank_engine_->groupSets() : per_rank_engine_->groupSets();
-    info.descriptors.reserve(task.descriptors().size());
     for (const auto& descriptor : task.descriptors()) {
-        FrozenTask::DescriptorInfo saved;
-        saved.group_set_id = descriptor.group_set_id;
-        saved.path_index = descriptor.path_index;
-        saved.source_tier = descriptor.source_tier;
-        saved.target_tier = descriptor.target_tier;
         const GroupSet* group = descriptor.group_set_id < groups.size() ? groups[descriptor.group_set_id].get() : nullptr;
-        const auto capture = [group](Tier tier, const std::vector<BlockIdxType>& blocks) {
-            std::vector<FrozenTask::BlockInfo> saved_blocks;
-            saved_blocks.reserve(blocks.size());
-            for (size_t member = 0; member < blocks.size(); ++member) {
-                std::shared_ptr<IBlockPool> pool;
-                if (group) {
-                    if (tier == Tier::DEVICE && member < group->devicePools().size())
-                        pool = group->devicePools()[member];
-                    else if (tier == Tier::HOST)
-                        pool = group->hostPool();
-                    else if (tier == Tier::DISK)
-                        pool = group->diskPool();
-                }
-                saved_blocks.push_back({pool, blocks[member], member, pool ? pool->poolName() : "unresolved"});
+        for (size_t member = 0; member < descriptor.target_blocks.size(); ++member) {
+            std::shared_ptr<IBlockPool> pool;
+            if (group) {
+                if (descriptor.target_tier == Tier::DEVICE && member < group->devicePools().size())
+                    pool = group->devicePools()[member];
+                else if (descriptor.target_tier == Tier::HOST)
+                    pool = group->hostPool();
+                else if (descriptor.target_tier == Tier::DISK)
+                    pool = group->diskPool();
             }
-            return saved_blocks;
-        };
-        saved.sources = capture(descriptor.source_tier, descriptor.source_blocks);
-        saved.targets = capture(descriptor.target_tier, descriptor.target_blocks);
-        info.descriptors.push_back(std::move(saved));
+            info.target_blocks.push_back({std::move(pool), descriptor.target_blocks[member]});
+        }
     }
     return info;
 }
@@ -270,7 +252,7 @@ void BlockTransferDispatcher::submitCoordinated(TransferTask task,
                                                TransferDoneCallback done,
                                                const char* completion_operation) const {
     auto execution = std::make_shared<CoordinatedExecution>(
-        this, describeExecution(task, completion_operation), std::move(done));
+        this, describeExecution(task), std::move(done));
     // Construct the subscription before starting any I/O. The child's callback
     // vector may still reject it; that path also passes through this finalizer.
     TransferAsyncContext::DoneCallback complete =

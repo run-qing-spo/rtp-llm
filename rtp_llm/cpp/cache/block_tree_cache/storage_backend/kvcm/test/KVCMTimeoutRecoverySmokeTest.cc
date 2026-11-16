@@ -471,7 +471,7 @@ TEST_F(KVCMTimeoutRecoverySmokeTest, NaturalRpcDeadlineDuringNativeSdkIoAutomati
         RecordProperty("rpc_sdk_inflight", sdk_inflight ? 1 : 0);
         frozen_count += records.size();
         for (const auto& record : records) {
-            EXPECT_EQ(record->execution().expected_rank_count, 2u);
+            EXPECT_EQ(record->execution().participant_ranks.size(), 2u);
             EXPECT_GT(record->snapshot().target_block_count, 0u);
             ASSERT_TRUE(waitFor([&] { return record->snapshot().state == FrozenTask::State::RELEASED; }, 30s));
             const auto proof = record->recoverySnapshot().last_query;

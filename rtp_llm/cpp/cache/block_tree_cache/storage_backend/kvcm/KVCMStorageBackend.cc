@@ -187,7 +187,7 @@ public:
             } catch (const StorageOperationCompletionUnknown& error) {
                 rtp_llm::TransferResult result(
                     ErrorInfo(ErrorCode::TRANSFER_COMPLETION_UNKNOWN, error.what()));
-                owner->populateReadDescriptors(execution, requests);
+                owner->populateReadTargets(execution, requests);
                 return std::make_shared<FrozenTask>(FrozenTask::prepare(std::move(execution)),
                                                    std::move(result), std::move(cleanup));
             }
@@ -196,60 +196,38 @@ public:
     };
     using ReadCompletionContextPtr = std::shared_ptr<ReadCompletionContext>;
 
-    ReadCompletionContextPtr prepareReadCompletionContext(const StorageRequest& request,
-                                              const std::vector<FunctionRequestPB>& requests) {
+    ReadCompletionContextPtr prepareReadCompletionContext(const std::vector<FunctionRequestPB>& requests) {
         FrozenTask::ExecutionInfo execution;
+        execution.registry_type = RegistryType::KVCM_READ;
         execution.trace_id = requests.front().remote_request().trace_id();
-        execution.operation = "read";
-        execution.request_id = request.request_id;
-        execution.remote = broadcast_manager_ != nullptr;
-        if (request.transfer_task) {
-            execution.workflow_id = request.transfer_task->workflowId();
-            execution.parent_trace_id = request.transfer_task->traceId();
-        }
+        execution.uses_rpc = broadcast_manager_ != nullptr;
         if (broadcast_manager_) {
             const auto& addresses = broadcast_manager_->workerAddresses();
             for (size_t rank = 0; rank < addresses.size(); ++rank)
-                execution.expected_peers.push_back({rank, addresses[rank]});
+                execution.participant_ranks.push_back({rank, addresses[rank]});
         } else {
-            execution.expected_peers.push_back({0, "local"});
+            execution.participant_ranks.push_back({0, "local"});
         }
-        execution.expected_rank_count = execution.expected_peers.size();
         TransferCompletionCleanup::Prepared cleanup;
         if (completion_cleanup_) {
             TransferCompletionTarget target;
-            target.remote = execution.remote;
-            for (const auto& peer : execution.expected_peers) {
+            target.remote = execution.uses_rpc;
+            for (const auto& peer : execution.participant_ranks) {
                 target.peers.push_back({peer.rank, peer.address});
             }
-            cleanup = completion_cleanup_->prepare(std::move(target), execution.trace_id);
+            cleanup = completion_cleanup_->prepare(std::move(target), {execution.registry_type, execution.trace_id});
         }
         return std::make_shared<ReadCompletionContext>(this, std::move(execution), std::move(cleanup));
     }
 
-    void populateReadDescriptors(FrozenTask::ExecutionInfo& execution,
-                                 const std::vector<FunctionRequestPB>& requests) const {
-        for (size_t rank = 0; rank < requests.size(); ++rank) {
-            const auto& remote = requests[rank].remote_request();
-            size_t block_index = 0;
-            for (int uri = 0; uri < remote.uris_size(); ++uri) {
-                const size_t count = remote.uri_block_counts().empty() ? 1 : remote.uri_block_counts(uri);
-                for (size_t member = 0; member < count; ++member, ++block_index) {
-                    const auto& tag = remote.group_tags(static_cast<int>(block_index));
-                    const auto& pool = pools_by_tag_.at(tag);
-                    FrozenTask::DescriptorInfo descriptor;
-                    descriptor.path_index = block_index;
-                    descriptor.source_tier = Tier::REMOTE;
-                    descriptor.target_tier = Tier::DEVICE;
-                    descriptor.rank = rank;
-                    descriptor.group_tag = tag;
-                    descriptor.source_uri = remote.uris(uri);
-                    descriptor.targets.push_back({pool, remote.block_ids(static_cast<int>(block_index)), member,
-                                                   pool->poolName()});
-                    execution.descriptors.push_back(std::move(descriptor));
-                }
+    void populateReadTargets(FrozenTask::ExecutionInfo& execution,
+                             const std::vector<FunctionRequestPB>& requests) const {
+        for (const auto& request : requests) {
+            const auto& remote = request.remote_request();
+            RTP_LLM_CHECK(remote.group_tags_size() == remote.block_ids_size());
+            for (int index = 0; index < remote.block_ids_size(); ++index) {
+                execution.target_blocks.push_back({pools_by_tag_.at(remote.group_tags(index)), remote.block_ids(index)});
             }
-            RTP_LLM_CHECK(block_index == static_cast<size_t>(remote.block_ids_size()));
         }
     }
 
@@ -925,7 +903,7 @@ public:
             read_outcome                   = "disabled";
             throw StorageOperationBufferSafeFailure("remote cache disabled by KVCM before read submission");
         }
-        completion_context = prepareReadCompletionContext(request, requests);
+        completion_context = prepareReadCompletionContext(requests);
         const bool retain_requests = !decode_publication_enabled_;
         if (retain_requests)
             completion_context->requests = std::move(requests);

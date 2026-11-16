@@ -166,14 +166,10 @@ TEST_F(FrozenExecutionTest, ActualExecutionTraceOwnsDeduplicatedTargetsBeforeBus
     EXPECT_EQ(completions, 1u);
     const auto frozen = dispatcher.frozenTasks();
     ASSERT_EQ(frozen.size(), 1u);
-    EXPECT_EQ(std::get<uint64_t>(frozen[0]->execution().trace_id), executor->submitted_traces[0]);
-    EXPECT_EQ(frozen[0]->execution().parent_trace_id, 901u);
-    EXPECT_EQ(frozen[0]->execution().workflow_id, 900u);
-    EXPECT_EQ(frozen[0]->execution().request_id, 73);
-    EXPECT_EQ(frozen[0]->execution().operation, "load");
-    EXPECT_FALSE(frozen[0]->execution().remote);
-    EXPECT_EQ(frozen[0]->execution().expected_rank_count, 1u);
-    EXPECT_EQ(frozen[0]->execution().descriptors.size(), 2u);
+    EXPECT_EQ(std::stoull(frozen[0]->execution().trace_id), executor->submitted_traces[0]);
+    EXPECT_FALSE(frozen[0]->execution().uses_rpc);
+    EXPECT_EQ(frozen[0]->execution().participant_ranks.size(), 1u);
+    EXPECT_EQ(frozen[0]->execution().target_blocks.size(), 2u);
     EXPECT_EQ(frozen[0]->snapshot().target_block_count, 1u);
     EXPECT_TRUE(host_->isAllocated(target));
     EXPECT_EQ(host_->treeRefCount(target), 1u);
@@ -212,12 +208,8 @@ TEST_F(FrozenExecutionTest, SeparateExecutionTracesSharingTargetReleaseOnlyTheir
     EXPECT_EQ(completions, 2u);
     const auto frozen = dispatcher.frozenTasks();
     ASSERT_EQ(frozen.size(), 2u);
-    EXPECT_EQ(std::get<uint64_t>(frozen[0]->execution().trace_id), first_trace);
-    EXPECT_EQ(std::get<uint64_t>(frozen[1]->execution().trace_id), second_trace);
-    for (const auto& execution : frozen) {
-        EXPECT_EQ(execution->execution().workflow_id, 900u);
-        EXPECT_EQ(execution->execution().parent_trace_id, 901u);
-    }
+    EXPECT_EQ(std::stoull(frozen[0]->execution().trace_id), first_trace);
+    EXPECT_EQ(std::stoull(frozen[1]->execution().trace_id), second_trace);
     EXPECT_EQ(host_->treeRefCount(target), 3u);
     EXPECT_EQ(host_->referencedBlocksNum(BlockTreeRefType::FROZEN), 1u);
 
@@ -248,12 +240,12 @@ TEST_F(FrozenExecutionTest, MixedSafeAndBannedReleaseForgetsEveryRankButPreserve
     ASSERT_EQ(banned.queryAndBlockMissing(std::vector<uint64_t>{trace}).front(),
               TransferTaskRegistry::State::REJECTED);
     FrozenTask::ExecutionInfo execution;
-    execution.trace_id = trace;
-    execution.operation = "load";
-    execution.remote = true;
-    execution.expected_rank_count = 2;
-    execution.expected_peers = {{0, "worker-0"}, {1, "worker-1"}};
-    execution.descriptors.push_back({0, 0, Tier::DISK, Tier::HOST, {}, {{host_, target, 0}}});
+    execution.trace_id = std::to_string(trace);
+
+    execution.uses_rpc = true;
+
+    execution.participant_ranks = {{0, "worker-0"}, {1, "worker-1"}};
+    execution.target_blocks.push_back({host_, target});
     auto frozen = std::make_shared<FrozenTask>(
         FrozenTask::prepare(std::move(execution)), unknownExecution(),
         cleanup->prepare({true, {{0, "worker-0"}, {1, "worker-1"}}}, trace));
@@ -272,9 +264,9 @@ TEST_F(FrozenExecutionTest, MixedSafeAndBannedReleaseForgetsEveryRankButPreserve
     const auto summary = cleanup->drain([&](const auto& route, const auto& traces, int) {
         EXPECT_TRUE(route.remote);
         EXPECT_EQ(route.peers.size(), 2u);
-        EXPECT_EQ(traces, (std::vector<TransferExecutionTrace>{trace}));
+        EXPECT_EQ(traces, (std::vector<TransferCompletionKey>{trace}));
         TransferCompletionForgetEntryResult entry;
-        entry.trace_id = trace;
+        entry.trace_id = std::to_string(trace);
         entry.all_done = true;
         for (const auto& peer : route.peers) {
             ++forget_calls;
@@ -318,10 +310,11 @@ TEST_F(FrozenExecutionTest, OrdinarySafeReleaseStillQueuesForgetExactlyOnce) {
     EXPECT_FALSE(host_->isAllocated(target));
     EXPECT_EQ(cleanup->size(), 1u);
     const auto summary = cleanup->drain([&](const auto&, const auto& traces, int) {
-        EXPECT_EQ(traces, (std::vector<TransferExecutionTrace>{frozen.front()->execution().trace_id}));
+        EXPECT_EQ(traces, (std::vector<TransferCompletionKey>{{frozen.front()->execution().registry_type, frozen.front()->execution().trace_id}}));
         TransferCompletionForgetResult result;
         TransferCompletionForgetEntryResult entry;
-        entry.trace_id = traces.front();
+        entry.registry_type = traces.front().registry_type;
+        entry.trace_id = traces.front().trace_id;
         entry.all_done = true;
         result.entries.push_back(std::move(entry));
         return result;
@@ -502,7 +495,6 @@ TEST_F(FrozenExecutionTest, WorkerLocalExecutionDoesNotCreateAnotherCoordinatorH
     dispatcher.waitForTransfers();
 }
 
-
 TEST_F(FrozenExecutionTest, ReleasedEnumerationDestroysManagedRecordOutsideTheDispatcherLock) {
     auto cleanup = std::make_shared<TransferCompletionCleanup>();
     const auto target = allocateTarget();
@@ -517,7 +509,7 @@ TEST_F(FrozenExecutionTest, ReleasedEnumerationDestroysManagedRecordOutsideTheDi
     ASSERT_EQ(records.size(), 1u);
     auto record = records.front();
     records.clear();
-    const auto trace = std::get<uint64_t>(record->execution().trace_id);
+    const auto trace = std::stoull(record->execution().trace_id);
     ASSERT_EQ(executor->submitted_proofs.size(), 1u);
     ASSERT_NE(executor->submitted_proofs.front(), nullptr);
     executor->submitted_proofs.front()->report(true);

@@ -15,7 +15,7 @@ class TransferCompletionQuery {
 public:
     // The local reader atomically bans missing executions in the selected registry
     // and returns REJECTED for those bans. Plain UNKNOWN is never safety proof.
-    using LocalReader = std::function<TransferTaskRegistry::State(const TransferExecutionTrace&)>;
+    using LocalReader = std::function<TransferTaskRegistry::State(const TransferCompletionKey&)>;
 
     explicit TransferCompletionQuery(std::shared_ptr<BroadcastManager> broadcast_manager,
                                      LocalReader local_reader = {});

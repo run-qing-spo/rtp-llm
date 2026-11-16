@@ -316,9 +316,9 @@ TEST(KVCMCompletionQueryTest, QueryNamespacesStaySeparateAndObserveReadCompletio
     query->add_keys()->set_kvcm_trace_id("write-71");
     query->add_keys()->set_kvcm_trace_id("missing-metadata-id");
     FrozenTask::ExecutionInfo local_execution;
+    local_execution.registry_type = RegistryType::KVCM_READ;
     local_execution.trace_id = std::string("71");
-    local_execution.expected_rank_count = 1;
-    local_execution.expected_peers = {{0, "local"}};
+    local_execution.participant_ranks = {{0, "local"}};
     for (const bool completed : {false, true}) {
         if (completed) {
             gate->release();
@@ -523,8 +523,8 @@ TEST(KVCMCompletionQueryTest, QueryDoesNotThawAndRecoveryWaitsForAllOriginalRpcP
     const auto frozen = coordinator->frozenTasks();
     ASSERT_EQ(frozen.size(), 1u);
     const auto record = frozen.front();
-    ASSERT_EQ(record->execution().expected_peers.size(), 2u);
-    EXPECT_EQ(std::get<std::string>(record->execution().trace_id), "block_tree_read_1");
+    ASSERT_EQ(record->execution().participant_ranks.size(), 2u);
+    EXPECT_EQ(record->execution().trace_id, "block_tree_read_1");
     const auto failure_message = record->failure().status.ToString();
     const auto references = environment.device_pool->refCount(environment.block_id);
     auto forget_rank_zero = [&] {
@@ -533,7 +533,7 @@ TEST(KVCMCompletionQueryTest, QueryDoesNotThawAndRecoveryWaitsForAllOriginalRpcP
         context.set_deadline(std::chrono::system_clock::now() + 2s);
         FunctionRequestPB forget;
         forget.mutable_completion_forget()->add_keys()->set_kvcm_trace_id(
-            std::get<std::string>(record->execution().trace_id));
+            record->execution().trace_id);
         FunctionResponsePB response;
         const auto status = stub->ExecuteFunction(&context, forget, &response);
         EXPECT_TRUE(status.ok());
@@ -588,7 +588,7 @@ TEST(KVCMCompletionQueryTest, QueryDoesNotThawAndRecoveryWaitsForAllOriginalRpcP
     EXPECT_TRUE(coordinator->frozenTasks().empty());
     for (const auto& worker : {worker0, worker1}) {
         EXPECT_EQ(worker->backend->taskRegistry().size(), 1u);
-        const auto trace = std::get<std::string>(record->execution().trace_id);
+        const auto trace = record->execution().trace_id;
         const auto duplicate = payloadRequest(*worker->environment, trace);
         FunctionResponsePB response;
         ASSERT_TRUE(worker->manager->executeFunction(duplicate, response));
@@ -644,7 +644,7 @@ TEST(KVCMCompletionQueryTest, QueryDoesNotThawAndRecoveryWaitsForAllOriginalRpcP
     }
     // The late request is rejected before SDK admission and consumes its fence.
     for (const auto& worker : {worker0, worker1}) {
-        const auto trace = std::get<std::string>(record->execution().trace_id);
+        const auto trace = record->execution().trace_id;
         const auto late = payloadRequest(*worker->environment, trace);
         FunctionResponsePB response;
         ASSERT_TRUE(worker->manager->executeFunction(late, response));
@@ -696,7 +696,7 @@ TEST(KVCMCompletionQueryTest, LocalSdkFailuresRecoverOnlyProvenHoldsOnSharedTarg
     ASSERT_EQ(environment.device_pool->treeRefCount(environment.block_id), 2u);
     std::vector<std::string> messages;
     for (const auto& record : records) {
-        EXPECT_FALSE(record->execution().remote);
+        EXPECT_FALSE(record->execution().uses_rpc);
         messages.push_back(record->failure().status.ToString());
     }
     FrozenTaskRecovery recovery(*cleanup, [manager = worker->manager] { return manager->frozenTasks(); },
@@ -706,7 +706,7 @@ TEST(KVCMCompletionQueryTest, LocalSdkFailuresRecoverOnlyProvenHoldsOnSharedTarg
     EXPECT_EQ(recovery.runOnce(2000).released, 0u);
     for (size_t index = 0; index < records.size(); ++index) {
         const auto& record = records[index];
-        const auto& trace = std::get<std::string>(record->execution().trace_id);
+        const auto& trace = record->execution().trace_id;
         // Test injection of a subsequent explicit safety proof. This does not
         // claim that the SDK currently exposes a late-completion callback.
         auto& registry = const_cast<TransferTaskRegistry&>(worker->backend->taskRegistry());
@@ -839,7 +839,7 @@ TEST(KVCMCompletionQueryTest, BackgroundRecoveryWaitsForProofAndStopKeepsLatePro
         for (const auto& worker : {worker0, worker1}) {
             EXPECT_EQ(worker->backend->taskRegistry().size(), stop_before_safe ? 1u : 0u);
             EXPECT_EQ(worker->backend->taskRegistry().queryLocal(
-                          std::vector<std::string>{std::get<std::string>(record->execution().trace_id)}).front(),
+                          std::vector<std::string>{record->execution().trace_id}).front(),
                       stop_before_safe ? RegistryState::BUFFER_SAFE : RegistryState::UNKNOWN);
         }
     }

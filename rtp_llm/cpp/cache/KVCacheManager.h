@@ -144,7 +144,7 @@ public:
                                                          int timeout_ms) const;
 
     TransferCompletionForgetResult forgetTransferCompletion(const TransferCompletionTarget& target,
-                                                            const std::vector<TransferExecutionTrace>& traces,
+                                                            const std::vector<TransferCompletionKey>& traces,
                                                             int timeout_ms) const;
 
     // Snapshot both existing owners; taking a snapshot does not transfer custody.
@@ -170,8 +170,8 @@ private:
     void                              reportMetricsLoop();
     void                              reportPrefillCacheHitMetrics(const MallocInfo& malloc_info, bool is_first_malloc);
     std::shared_ptr<BroadcastManager> createMultiRankBlockTransferManager() const;
-    TransferTaskRegistry::State localTransferCompletion(const TransferExecutionTrace& trace_id) const;
-    TransferTaskRegistry::ForgetResult localForgetTransferCompletion(const TransferExecutionTrace& trace_id) const;
+    TransferTaskRegistry::State localTransferCompletion(const TransferCompletionKey& trace_id) const;
+    TransferTaskRegistry::ForgetResult localForgetTransferCompletion(const TransferCompletionKey& trace_id) const;
 
     // 成员变量
     CacheConfig                config_;

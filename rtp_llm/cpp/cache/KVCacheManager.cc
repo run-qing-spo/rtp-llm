@@ -751,17 +751,17 @@ KVCacheManager::incrKVCacheRef(const KVCacheResource& resource, const CacheKeysT
 std::vector<std::shared_ptr<FrozenTask>> KVCacheManager::frozenTasks() const {
     return block_tree_cache_ ? block_tree_cache_->reclaimer().frozenTasks() : std::vector<std::shared_ptr<FrozenTask>>{};
 }
-TransferTaskRegistry::State KVCacheManager::localTransferCompletion(const TransferExecutionTrace& trace) const {
+TransferTaskRegistry::State KVCacheManager::localTransferCompletion(const TransferCompletionKey& trace) const {
     return block_tree_cache_ ? block_tree_cache_->reclaimer().localTransferCompletion(trace) : TransferTaskRegistry::State::UNKNOWN;
 }
-TransferTaskRegistry::ForgetResult KVCacheManager::localForgetTransferCompletion(const TransferExecutionTrace& trace) const {
+TransferTaskRegistry::ForgetResult KVCacheManager::localForgetTransferCompletion(const TransferCompletionKey& trace) const {
     return block_tree_cache_ ? block_tree_cache_->reclaimer().localForgetTransferCompletion(trace) : TransferTaskRegistry::ForgetResult::FAILED;
 }
 TransferCompletionQueryResult KVCacheManager::queryTransferCompletion(const FrozenTask::ExecutionInfo& execution, int timeout) const {
     return block_tree_cache_->reclaimer().queryTransferCompletion(execution, timeout);
 }
 TransferCompletionForgetResult KVCacheManager::forgetTransferCompletion(const TransferCompletionTarget& target,
-    const std::vector<TransferExecutionTrace>& traces, int timeout) const {
+    const std::vector<TransferCompletionKey>& traces, int timeout) const {
     return block_tree_cache_->reclaimer().forgetTransferCompletion(target, traces, timeout);
 }
 

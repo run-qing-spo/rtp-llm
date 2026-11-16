@@ -5,7 +5,6 @@
 #include <functional>
 #include <memory>
 #include <mutex>
-#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -19,8 +18,8 @@ namespace rtp_llm {
 struct TransferCompletionQueryResult;
 
 // One coordinator execution trace owns one hold for each distinct target slot.
-// Sources are immutable diagnostics only. No tree node or business settlement
-// callback survives here, and destruction never releases frozen references.
+// No source pool, tree node or business callback survives here. Destruction
+// never releases frozen references.
 class FrozenTask {
 public:
     struct TransferParticipant {
@@ -28,35 +27,17 @@ public:
         std::string address;
     };
 
-    struct BlockInfo {
+    struct TargetBlock {
         std::shared_ptr<IBlockPool> pool;
-        BlockIdxType                block{NULL_BLOCK_IDX};
-        size_t                      member_index{0};
-        std::string                 pool_name;
-    };
-
-    struct DescriptorInfo {
-        size_t                 group_set_id{0};
-        size_t                 path_index{0};
-        Tier                   source_tier{Tier::NONE};
-        Tier                   target_tier{Tier::NONE};
-        std::vector<BlockInfo> sources;
-        std::vector<BlockInfo> targets;
-        std::optional<size_t>  rank{};
-        std::string            group_tag{};
-        std::string            source_uri{};
+        BlockIdxType block{NULL_BLOCK_IDX};
     };
 
     struct ExecutionInfo {
-        TransferExecutionTrace      trace_id{uint64_t{0}};
-        std::string                 operation;
-        std::optional<int64_t>      request_id;
-        uint64_t                    workflow_id{0};
-        uint64_t                    parent_trace_id{0};
-        bool                        remote{false};
-        size_t                      expected_rank_count{0};
-        std::vector<TransferParticipant> expected_peers;
-        std::vector<DescriptorInfo> descriptors;
+        RegistryType registry_type{RegistryType::BLOCK_TRANSFER};
+        std::string trace_id;
+        bool uses_rpc{false};
+        std::vector<TransferParticipant> participant_ranks;
+        std::vector<TargetBlock> target_blocks;
     };
 
     enum class State { PREPARED, FROZEN, RELEASING, RELEASED };

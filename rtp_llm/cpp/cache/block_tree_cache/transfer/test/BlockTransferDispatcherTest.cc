@@ -634,9 +634,9 @@ TEST(BlockTransferDispatcherTest, OverlappingTasksKeepIndependentResults) {
 
 TransferCompletionCleanup::Forget localCleanupForget(const BlockTransferDispatcher& dispatcher) {
     return [&dispatcher](const TransferCompletionTarget& target,
-                         const std::vector<TransferExecutionTrace>& traces, int timeout_ms) {
-        TransferCompletionForget forget(nullptr, [&dispatcher](const TransferExecutionTrace& trace) {
-            return dispatcher.forgetLocalCompletion(std::get<uint64_t>(trace));
+                         const std::vector<TransferCompletionKey>& traces, int timeout_ms) {
+        TransferCompletionForget forget(nullptr, [&dispatcher](const TransferCompletionKey& trace) {
+            return dispatcher.forgetLocalCompletion(trace.numericId());
         });
         return forget.forget(target, traces, timeout_ms);
     };
@@ -674,14 +674,14 @@ TEST(BlockTransferDispatcherTest, CoordinatorCleanupRetainsKnownFailureUntilLate
         EXPECT_EQ(business_result.ok(), initially_safe);
         EXPECT_EQ(business_result.buffer_safe, initially_safe);
         const auto forget = [&](const TransferCompletionTarget& target,
-                                const std::vector<TransferExecutionTrace>& traces, int timeout_ms) {
+                                const std::vector<TransferCompletionKey>& traces, int timeout_ms) {
             EXPECT_FALSE(target.remote);
             EXPECT_EQ(target.peers.size(), 1u);
             if (target.peers.size() == 1) {
                 EXPECT_EQ(target.peers[0].rank, 0u);
                 EXPECT_EQ(target.peers[0].address, "local");
             }
-            EXPECT_EQ(traces, (std::vector<TransferExecutionTrace>{parent_trace}));
+            EXPECT_EQ(traces, (std::vector<TransferCompletionKey>{parent_trace}));
             return localCleanupForget(dispatcher)(target, traces, timeout_ms);
         };
         const auto first = cleanup->drain(forget, 1000);
@@ -861,13 +861,13 @@ TEST(BlockTransferDispatcherTest, MultiRankCleanupKeepsOriginalParticipantsAndAc
     EXPECT_EQ(cleanup->size(), 1u);
     size_t batches = 0;
     const auto summary = cleanup->drain(
-        [&](const TransferCompletionTarget& target, const std::vector<TransferExecutionTrace>& traces, int timeout_ms) {
+        [&](const TransferCompletionTarget& target, const std::vector<TransferCompletionKey>& traces, int timeout_ms) {
             ++batches;
             EXPECT_TRUE(target.remote);
             EXPECT_EQ(target.peers.size(), 2u);
             for (const auto& peer : target.peers)
                 EXPECT_EQ(peer.address, addresses.at(peer.rank));
-            EXPECT_EQ(traces, (std::vector<TransferExecutionTrace>{trace}));
+            EXPECT_EQ(traces, (std::vector<TransferCompletionKey>{trace}));
             return TransferCompletionForget(manager).forget(target, traces, timeout_ms);
         }, 2000);
     EXPECT_EQ(summary.forgotten, 1u);

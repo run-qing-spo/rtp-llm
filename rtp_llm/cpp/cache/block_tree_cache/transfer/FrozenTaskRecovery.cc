@@ -18,14 +18,15 @@ struct Proof {
 };
 
 // Validate the semantic query result independently of its injectable producer.
-// No allocation is needed to validate a complete proof. Both trace alternatives
-// and every original rank/address must match, with no duplicates or omissions.
+// Validation does not allocate. Registry, trace and every original rank/address
+// must match, with no duplicates or omissions.
 Proof validate(const FrozenTask::ExecutionInfo& execution, const TransferCompletionQueryResult& query) noexcept {
-    if (!validTransferExecutionTrace(execution.trace_id) || query.trace_id != execution.trace_id)
+    if (!validTransferCompletionKey(execution.registry_type, execution.trace_id)
+        || query.registry_type != execution.registry_type || query.trace_id != execution.trace_id)
         return {false, false, "recovery query trace does not match frozen execution"};
-    const auto count = execution.expected_rank_count;
-    if (count == 0 || execution.expected_peers.size() != count || query.ranks.size() != count
-        || (!execution.remote && count != 1))
+    const auto count = execution.participant_ranks.size();
+    if (count == 0 || query.ranks.size() != count
+        || (!execution.uses_rpc && count != 1))
         return {false, false, "recovery query does not cover the original participants"};
     if (!query.error.empty())
         return {false, false, nullptr};
@@ -33,7 +34,7 @@ Proof validate(const FrozenTask::ExecutionInfo& execution, const TransferComplet
     for (size_t rank = 0; rank < count; ++rank) {
         const FrozenTask::TransferParticipant* peer = nullptr;
         const TransferCompletionRankResult* row = nullptr;
-        for (const auto& candidate : execution.expected_peers) {
+        for (const auto& candidate : execution.participant_ranks) {
             if (candidate.rank == rank) {
                 if (peer)
                     return {false, false, "frozen execution has duplicate participant ranks"};
@@ -49,7 +50,7 @@ Proof validate(const FrozenTask::ExecutionInfo& execution, const TransferComplet
         }
         if (!peer || !row || peer->address.empty() || peer->address != row->server_address)
             return {false, false, "recovery query rank or address does not match frozen execution"};
-        if (execution.remote && (!row->cq_received || !row->cq_ok || !row->grpc_code))
+        if (execution.uses_rpc && (!row->cq_received || !row->cq_ok || !row->grpc_code))
             return {false, false, "remote recovery query has no successful CQ and gRPC evidence"};
         if (!row->error.empty() || (row->grpc_code && *row->grpc_code != 0)
             || (row->cq_received && !row->cq_ok))
@@ -77,9 +78,10 @@ void recordQuery(const std::shared_ptr<FrozenTask>& task, TransferCompletionQuer
 void recordException(const std::shared_ptr<FrozenTask>& task, const char* error) noexcept {
     try {
         TransferCompletionQueryResult failure;
+        failure.registry_type = task->execution().registry_type;
         failure.trace_id = task->execution().trace_id;
         failure.error = error;
-        for (const auto& peer : task->execution().expected_peers) {
+        for (const auto& peer : task->execution().participant_ranks) {
             TransferCompletionRankResult row;
             row.rank = peer.rank;
             row.server_address = peer.address;

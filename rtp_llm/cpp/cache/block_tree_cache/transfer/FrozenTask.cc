@@ -16,33 +16,21 @@ int64_t wallTimeUs() noexcept {
 }  // namespace
 
 FrozenTask::PreparedExecution FrozenTask::prepare(ExecutionInfo execution) {
-    RTP_LLM_CHECK_WITH_INFO(validTransferExecutionTrace(execution.trace_id),
+    RTP_LLM_CHECK_WITH_INFO(validTransferCompletionKey(execution.registry_type, execution.trace_id),
                             "frozen execution requires a valid trace");
     std::vector<TargetPool>                        targets;
     std::unordered_map<IBlockPool*, size_t>        pool_indices;
     std::unordered_map<IBlockPool*, std::unordered_set<BlockIdxType>> seen;
     size_t                                        target_block_count = 0;
-    for (auto& descriptor : execution.descriptors) {
-        for (auto& source : descriptor.sources) {
-            // Source metadata can be unavailable on a diagnostic-only/mock
-            // path. Sources never contribute frozen references.
-            if (source.pool) {
-                source.pool_name = source.pool->poolName();
-            }
-        }
-        for (auto& target : descriptor.targets) {
-            RTP_LLM_CHECK_WITH_INFO(target.pool != nullptr, "frozen target requires a physical pool");
-            target.pool_name = target.pool->poolName();
-            if (!seen[target.pool.get()].insert(target.block).second) {
-                continue;
-            }
-            auto [position, inserted] = pool_indices.emplace(target.pool.get(), targets.size());
-            if (inserted) {
-                targets.push_back(TargetPool{target.pool, {}, {}});
-            }
-            targets[position->second].blocks.push_back(target.block);
-            ++target_block_count;
-        }
+    for (const auto& target : execution.target_blocks) {
+        RTP_LLM_CHECK_WITH_INFO(target.pool != nullptr, "frozen target requires a physical pool");
+        if (!seen[target.pool.get()].insert(target.block).second)
+            continue;
+        auto [position, inserted] = pool_indices.emplace(target.pool.get(), targets.size());
+        if (inserted)
+            targets.push_back(TargetPool{target.pool, {}, {}});
+        targets[position->second].blocks.push_back(target.block);
+        ++target_block_count;
     }
     for (auto& target : targets) {
         target.release = target.pool->prepareFrozenReferenceRelease(target.blocks);
