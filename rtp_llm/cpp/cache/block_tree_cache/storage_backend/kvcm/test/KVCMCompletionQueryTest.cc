@@ -1,3 +1,4 @@
+#include "rtp_llm/cpp/cache/block_tree_cache/BlockTreeReclaimer.h"
 #include "rtp_llm/cpp/cache/block_tree_cache/storage_backend/kvcm/test/KVCMMockTestBase.h"
 
 #include <condition_variable>
@@ -59,8 +60,10 @@ std::shared_ptr<KVCacheManager> makeQueryManager(const BackendEnvironment& envir
     manager->block_tree_cache_ = block_tree_cache_test::makeBlockTreeCacheForTest({full});
     if (!manager->block_tree_cache_)
         return nullptr;
+    manager->block_tree_cache_->stopBackgroundTasks();
     manager->block_tree_cache_->storage_backend_ = backend;
-    manager->transfer_broadcast_manager_ = std::move(broadcast);
+    manager->block_tree_cache_->reclaimer().configure(parallel.tp_rank,
+        config.block_tree_frozen_recovery_interval_ms, config.block_tree_frozen_recovery_query_timeout_ms, std::move(broadcast));
     return manager;
 }
 
@@ -788,10 +791,10 @@ TEST(KVCMCompletionQueryTest, BackgroundRecoveryWaitsForProofAndStopKeepsLatePro
         recovery_config.block_tree_frozen_recovery_query_timeout_ms = 1000;
         auto coordinator = makeQueryManager(environment, backend, parallel, broadcast, recovery_config);
         ASSERT_NE(coordinator, nullptr);
-        coordinator->completion_cleanup_ = std::make_shared<TransferCompletionCleanup>();
-        backend->setCompletionCleanup(coordinator->completion_cleanup_);
-        ASSERT_TRUE(coordinator->startFrozenTaskRecovery());
-        block_tree_cache_detail::ScopeRollback stop([coordinator] { coordinator->stopFrozenTaskRecovery(); });
+        coordinator->block_tree_cache_->reclaimer().completion_cleanup_ = std::make_shared<TransferCompletionCleanup>();
+        backend->setCompletionCleanup(coordinator->block_tree_cache_->reclaimer().completion_cleanup_);
+        ASSERT_TRUE(coordinator->block_tree_cache_->reclaimer().start());
+        block_tree_cache_detail::ScopeRollback stop([coordinator] { coordinator->block_tree_cache_->stopBackgroundTasks(); });
 
         const kv_cache_manager::Locations locations{{{"tp0_Fdefault", "pace://background-0"},
                                                      {"tp1_Fdefault", "pace://background-1"}}};
@@ -827,10 +830,10 @@ TEST(KVCMCompletionQueryTest, BackgroundRecoveryWaitsForProofAndStopKeepsLatePro
         EXPECT_EQ(pending.last_query->ranks[1].state, RegistryState::BUFFER_SAFE);
         EXPECT_EQ(record->snapshot().state, FrozenTask::State::FROZEN);
         EXPECT_EQ(environment.device_pool->refCount(environment.block_id), original_references + 1);
-        EXPECT_EQ(coordinator->completion_cleanup_->size(), 0u);
+        EXPECT_EQ(coordinator->block_tree_cache_->reclaimer().completion_cleanup_->size(), 0u);
 
         if (stop_before_safe)
-            coordinator->stopFrozenTaskRecovery();
+            coordinator->block_tree_cache_->stopBackgroundTasks();
         const auto queries_before_safe = record->recoverySnapshot().query_count;
         gate->release();
         ASSERT_TRUE(server0.waitReadCompleted());
@@ -845,9 +848,9 @@ TEST(KVCMCompletionQueryTest, BackgroundRecoveryWaitsForProofAndStopKeepsLatePro
             ASSERT_TRUE(waitUntil([worker0, worker1, coordinator] {
                 return worker0->backend->taskRegistry().size() == 0
                        && worker1->backend->taskRegistry().size() == 0
-                       && coordinator->completion_cleanup_->size() == 0;
+                       && coordinator->block_tree_cache_->reclaimer().completion_cleanup_->size() == 0;
             }));
-            coordinator->stopFrozenTaskRecovery();
+            coordinator->block_tree_cache_->stopBackgroundTasks();
             EXPECT_FALSE(environment.device_pool->isFrozen(environment.block_id));
             EXPECT_EQ(environment.device_pool->refCount(environment.block_id), original_references);
         }

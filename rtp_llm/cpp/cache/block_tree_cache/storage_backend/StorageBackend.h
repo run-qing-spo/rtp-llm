@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include "rtp_llm/cpp/cache/block_tree_cache/transfer/TransferTaskRegistry.h"
 #include <atomic>
 #include <unordered_map>
 
@@ -28,6 +29,8 @@
 
 namespace rtp_llm {
 
+class FrozenTask;
+class TransferCompletionCleanup;
 class BatchKVCacheResource;
 class BlockTreeCacheMetricsReporter;
 enum class AsyncProfileKind;
@@ -168,6 +171,12 @@ private:
 // before derived backend state starts destruction.
 class StorageBackend {
 public:
+    virtual void setCompletionCleanup(std::shared_ptr<TransferCompletionCleanup>) {}
+    virtual void cleanupExpiredMissing() {}
+    virtual std::vector<std::shared_ptr<FrozenTask>> frozenTasks() const { return {}; }
+    virtual TransferTaskRegistry::State queryReadCompletion(const std::string&) const { return TransferTaskRegistry::State::UNKNOWN; }
+    virtual TransferTaskRegistry::ForgetResult forgetReadCompletion(const std::string&) { return TransferTaskRegistry::ForgetResult::FAILED; }
+
     class ExternalIoGuard {
     public:
         ExternalIoGuard() = default;

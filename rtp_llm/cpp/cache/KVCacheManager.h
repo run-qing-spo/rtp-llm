@@ -168,14 +168,10 @@ public:
 private:
     std::function<void()>             allocationChangeCallback() const;
     void                              reportMetricsLoop();
-    void                              missingCleanupLoop();
-    void                              stopMissingCleanup();
     void                              reportPrefillCacheHitMetrics(const MallocInfo& malloc_info, bool is_first_malloc);
     std::shared_ptr<BroadcastManager> createMultiRankBlockTransferManager() const;
     TransferTaskRegistry::State localTransferCompletion(const TransferExecutionTrace& trace_id) const;
     TransferTaskRegistry::ForgetResult localForgetTransferCompletion(const TransferExecutionTrace& trace_id) const;
-    bool startFrozenTaskRecovery();
-    void stopFrozenTaskRecovery() noexcept;
 
     // 成员变量
     CacheConfig                config_;
@@ -199,15 +195,7 @@ private:
     std::atomic<bool> stop_{false};
     std::thread       metrics_reporter_thread_;
 
-    std::mutex              missing_cleanup_mutex_;
-    std::condition_variable missing_cleanup_cv_;
-    bool                    missing_cleanup_stopped_{false};
-    std::thread             missing_cleanup_thread_;
-
     BlockTreeCachePtr                           block_tree_cache_;
-    std::shared_ptr<BroadcastManager>           transfer_broadcast_manager_;
-    std::shared_ptr<TransferCompletionCleanup> completion_cleanup_;
-    std::unique_ptr<FrozenTaskRecovery>         frozen_task_recovery_;
     std::shared_ptr<KVCacheAllocationWaitState> allocation_wait_state_;
 
     mutable std::mutex          cache_store_mutex_;
