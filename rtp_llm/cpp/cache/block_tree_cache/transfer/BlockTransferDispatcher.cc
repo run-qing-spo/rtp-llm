@@ -100,7 +100,8 @@ struct BlockTransferDispatcher::CoordinatedExecution {
             } else {
                 // A known failure can receive its physical proof later. Queue
                 // its identity now; worker forget retains RUNNING evidence.
-                cleanup.submit();
+                if (owner->completion_cleanup_)
+                    owner->completion_cleanup_->enqueue(std::move(cleanup));
             }
         } catch (...) {
             std::terminate();
@@ -315,7 +316,8 @@ void BlockTransferDispatcher::submitCoordinated(TransferTask task,
         if (!context) {
             // The outer batch still owns error classification and settlement.
             // Preserve this B's cleanup candidate even without a returned context.
-            execution->cleanup.submit();
+            if (completion_cleanup_)
+                completion_cleanup_->enqueue(std::move(execution->cleanup));
             throw;
         }
         try {

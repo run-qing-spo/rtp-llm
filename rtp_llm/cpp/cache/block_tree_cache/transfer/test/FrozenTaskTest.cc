@@ -64,6 +64,7 @@ TransferResult unknownResult() {
 }
 
 TEST(FrozenTaskTest, PreparationDoesNotAcquireReferencesAndOnlyTargetsFreeze) {
+    auto cleanup = std::make_shared<TransferCompletionCleanup>();
     auto source_pool = makePool("source");
     auto target_pool = makePool("target");
     const auto source = heldBlock(source_pool);
@@ -75,7 +76,7 @@ TEST(FrozenTaskTest, PreparationDoesNotAcquireReferencesAndOnlyTargetsFreeze) {
 
     FrozenTask task(std::move(prepared), unknownResult());
     EXPECT_EQ(task.snapshot().state, FrozenTask::State::PREPARED);
-    EXPECT_FALSE(task.completeRecovery());
+    EXPECT_FALSE(task.completeRecovery(*cleanup));
     task.freeze();
     task.freeze();
     EXPECT_FALSE(source_pool->isFrozen(source));
@@ -89,11 +90,11 @@ TEST(FrozenTaskTest, PreparationDoesNotAcquireReferencesAndOnlyTargetsFreeze) {
     EXPECT_GT(frozen.frozen_at_us, 0);
     EXPECT_EQ(frozen.released_at_us, 0);
 
-    EXPECT_TRUE(task.completeRecovery());
+    EXPECT_TRUE(task.completeRecovery(*cleanup));
     const auto released = task.snapshot();
     EXPECT_EQ(released.state, FrozenTask::State::RELEASED);
     EXPECT_GT(released.released_at_us, 0);
-    EXPECT_FALSE(task.completeRecovery());
+    EXPECT_FALSE(task.completeRecovery(*cleanup));
     task.freeze();
     EXPECT_EQ(task.snapshot().released_at_us, released.released_at_us);
     EXPECT_EQ(task.snapshot().frozen_at_us, frozen.frozen_at_us);
@@ -103,6 +104,7 @@ TEST(FrozenTaskTest, PreparationDoesNotAcquireReferencesAndOnlyTargetsFreeze) {
 }
 
 TEST(FrozenTaskTest, DeduplicatesTargetSlotsAcrossDescriptorsButKeepsCompleteMetadata) {
+    auto cleanup = std::make_shared<TransferCompletionCleanup>();
     auto first_pool  = makePool("first");
     auto second_pool = makePool("second");
     const auto first = heldBlock(first_pool);
@@ -125,12 +127,13 @@ TEST(FrozenTaskTest, DeduplicatesTargetSlotsAcrossDescriptorsButKeepsCompleteMet
     EXPECT_EQ(task.execution().descriptors[1].targets.size(), 2u);
     EXPECT_EQ(task.execution().descriptors[0].sources[0].pool_name, "first");
     EXPECT_EQ(task.execution().descriptors[1].targets[1].pool_name, "second");
-    task.completeRecovery();
+    task.completeRecovery(*cleanup);
     EXPECT_EQ(first_pool->treeRefCount(first), 1u);
     EXPECT_EQ(second_pool->treeRefCount(second), 1u);
 }
 
 TEST(FrozenTaskTest, SharedTargetsKeepIndependentTaskReferencesAcrossBusinessRelease) {
+    auto cleanup = std::make_shared<TransferCompletionCleanup>();
     auto pool = makePool("shared");
     const auto block = heldBlock(pool);
     FrozenTask first(FrozenTask::prepare(execution(23, {}, {{pool, block, 0}})), unknownResult());
@@ -141,12 +144,12 @@ TEST(FrozenTaskTest, SharedTargetsKeepIndependentTaskReferencesAcrossBusinessRel
     EXPECT_EQ(pool->referencedBlocksNum(BlockTreeRefType::FROZEN), 1u);
 
     pool->decTreeRef(block, BlockTreeRefType::CACHE);
-    EXPECT_TRUE(first.completeRecovery());
-    EXPECT_FALSE(first.completeRecovery());
+    EXPECT_TRUE(first.completeRecovery(*cleanup));
+    EXPECT_FALSE(first.completeRecovery(*cleanup));
     EXPECT_TRUE(pool->isAllocated(block));
     EXPECT_TRUE(pool->isFrozen(block));
     EXPECT_EQ(pool->treeRefCount(block), 1u);
-    EXPECT_TRUE(second.completeRecovery());
+    EXPECT_TRUE(second.completeRecovery(*cleanup));
     EXPECT_FALSE(pool->isAllocated(block));
     EXPECT_EQ(pool->referencedBlocksNum(BlockTreeRefType::FROZEN), 0u);
     EXPECT_EQ(pool->freeBlocksNum(), pool->totalBlocksNum());
@@ -167,6 +170,7 @@ TEST(FrozenTaskTest, DestructionDoesNotReleaseFrozenTargets) {
 }
 
 TEST(FrozenTaskTest, PoolOwnershipOutlivesCallerAndSourceAllocation) {
+    auto cleanup = std::make_shared<TransferCompletionCleanup>();
     auto source_pool = makePool("source-lifetime");
     auto target_pool = makePool("target-lifetime");
     const auto source = heldBlock(source_pool);
@@ -185,7 +189,7 @@ TEST(FrozenTaskTest, PoolOwnershipOutlivesCallerAndSourceAllocation) {
         EXPECT_FALSE(weak_source.expired());
         EXPECT_FALSE(weak_target.expired());
         EXPECT_NE(task.debugString().find("source-lifetime"), std::string::npos);
-        task.completeRecovery();
+        task.completeRecovery(*cleanup);
         EXPECT_EQ(weak_target.lock()->freeBlocksNum(), weak_target.lock()->totalBlocksNum());
     }
     EXPECT_TRUE(weak_source.expired());
@@ -193,6 +197,7 @@ TEST(FrozenTaskTest, PoolOwnershipOutlivesCallerAndSourceAllocation) {
 }
 
 TEST(FrozenTaskTest, ThrowingCapacityNotificationsCannotInterruptOrRepeatBatchRelease) {
+    auto cleanup = std::make_shared<TransferCompletionCleanup>();
     auto first_pool = makePool("first-notify");
     auto second_pool = makePool("second-notify");
     const auto first = heldBlock(first_pool);
@@ -215,8 +220,8 @@ TEST(FrozenTaskTest, ThrowingCapacityNotificationsCannotInterruptOrRepeatBatchRe
     task.freeze();
     first_pool->decTreeRef({first, other}, BlockTreeRefType::CACHE);
     second_pool->decTreeRef(second, BlockTreeRefType::CACHE);
-    EXPECT_TRUE(task.completeRecovery());
-    EXPECT_FALSE(task.completeRecovery());
+    EXPECT_TRUE(task.completeRecovery(*cleanup));
+    EXPECT_FALSE(task.completeRecovery(*cleanup));
     EXPECT_EQ(first_notifications, 1u);
     EXPECT_EQ(second_notifications, 1u);
     EXPECT_EQ(task.snapshot().state, FrozenTask::State::RELEASED);
@@ -225,6 +230,7 @@ TEST(FrozenTaskTest, ThrowingCapacityNotificationsCannotInterruptOrRepeatBatchRe
 }
 
 TEST(FrozenTaskTest, ReleaseNotificationsCanInspectAndReenterTaskWithoutRepeatingReferences) {
+    auto cleanup = std::make_shared<TransferCompletionCleanup>();
     auto pool = makePool("reentrant-notify");
     const auto block = heldBlock(pool);
     FrozenTask* observed = nullptr;
@@ -234,13 +240,13 @@ TEST(FrozenTaskTest, ReleaseNotificationsCanInspectAndReenterTaskWithoutRepeatin
         ASSERT_NE(observed, nullptr);
         EXPECT_EQ(observed->snapshot().state, FrozenTask::State::RELEASING);
         EXPECT_NE(observed->debugString().find("state=RELEASING"), std::string::npos);
-        EXPECT_FALSE(observed->completeRecovery());
+        EXPECT_FALSE(observed->completeRecovery(*cleanup));
         observed->freeze();
     });
     FrozenTask task(FrozenTask::prepare(execution(28, {}, {{pool, block, 0}})), unknownResult());
     observed = &task;
     task.freeze();
-    EXPECT_TRUE(task.completeRecovery());
+    EXPECT_TRUE(task.completeRecovery(*cleanup));
     EXPECT_EQ(notifications, 1u);
     EXPECT_EQ(task.snapshot().state, FrozenTask::State::RELEASED);
     EXPECT_EQ(pool->treeRefCount(block), 1u);
@@ -265,7 +271,7 @@ TEST(FrozenTaskTest, ConcurrentRepeatedFreezeAndRecoveryOwnOneReference) {
     std::atomic<size_t> releases{0};
     for (size_t i = 0; i < 8; ++i) {
         threads.emplace_back([&] {
-            if (task.completeRecovery()) {
+            if (task.completeRecovery(*cleanup)) {
                 ++releases;
             }
         });
@@ -291,7 +297,7 @@ TEST(FrozenTaskTest, CleanupIsSubmittedOnlyAfterEveryPhysicalReleaseFinishes) {
         ++notifications;
         ASSERT_NE(observed, nullptr);
         EXPECT_EQ(observed->snapshot().state, FrozenTask::State::RELEASING);
-        EXPECT_FALSE(observed->completeRecovery());
+        EXPECT_FALSE(observed->completeRecovery(*cleanup));
         EXPECT_EQ(cleanup->size(), 0u);
         EXPECT_FALSE(first_pool->isAllocated(first));
         EXPECT_TRUE(second_pool->isFrozen(second));
@@ -308,13 +314,13 @@ TEST(FrozenTaskTest, CleanupIsSubmittedOnlyAfterEveryPhysicalReleaseFinishes) {
                     unknownResult(),
                     cleanup->prepare({true, {{0, "worker-0:100"}, {1, "worker-1:100"}}}, uint64_t{36}));
     observed = &task;
-    EXPECT_FALSE(task.completeRecovery());
+    EXPECT_FALSE(task.completeRecovery(*cleanup));
     EXPECT_EQ(cleanup->size(), 0u);
     task.freeze();
     first_pool->decTreeRef(first, BlockTreeRefType::CACHE);
     second_pool->decTreeRef(second, BlockTreeRefType::CACHE);
-    EXPECT_TRUE(task.completeRecovery());
-    EXPECT_FALSE(task.completeRecovery());
+    EXPECT_TRUE(task.completeRecovery(*cleanup));
+    EXPECT_FALSE(task.completeRecovery(*cleanup));
     EXPECT_EQ(notifications, 2u);
     EXPECT_EQ(task.snapshot().state, FrozenTask::State::RELEASED);
     EXPECT_EQ(cleanup->size(), 1u);
@@ -370,7 +376,7 @@ TEST(FrozenTaskTest, PendingCleanupDoesNotRetainTheReleasedTaskOrPools) {
         task->freeze();
         source_pool->decTreeRef(source, BlockTreeRefType::CACHE);
         target_pool->decTreeRef(target, BlockTreeRefType::CACHE);
-        EXPECT_TRUE(task->completeRecovery());
+        EXPECT_TRUE(task->completeRecovery(*cleanup));
         EXPECT_EQ(cleanup->size(), 1u);
     }
     EXPECT_TRUE(weak_task.expired());
@@ -380,6 +386,7 @@ TEST(FrozenTaskTest, PendingCleanupDoesNotRetainTheReleasedTaskOrPools) {
 }
 
 TEST(FrozenTaskTest, RecoveryQueriesPreserveOriginalFailureAndDoNotReleaseTargets) {
+    auto cleanup = std::make_shared<TransferCompletionCleanup>();
     auto pool = makePool("recovery-observation");
     const auto block = heldBlock(pool);
     auto info = execution(34, {}, {{pool, block, 0}});
@@ -448,11 +455,12 @@ TEST(FrozenTaskTest, RecoveryQueriesPreserveOriginalFailureAndDoNotReleaseTarget
                               "state=BUFFER_SAFE", "failure_reason=\"worker_completion_unknown\""}) {
         EXPECT_NE(safe_log.find(field), std::string::npos) << field << '\n' << safe_log;
     }
-    EXPECT_TRUE(task.completeRecovery());
+    EXPECT_TRUE(task.completeRecovery(*cleanup));
     EXPECT_EQ(task.recoverySnapshot().last_query, safe_result);
 }
 
 TEST(FrozenTaskTest, ConcurrentRecoveryQueriesRetainCountAndLatestStringTraceObservation) {
+    auto cleanup = std::make_shared<TransferCompletionCleanup>();
     auto pool = makePool("concurrent-observation");
     const auto block = heldBlock(pool);
     auto info = execution(35, {}, {{pool, block, 0}});
@@ -482,7 +490,7 @@ TEST(FrozenTaskTest, ConcurrentRecoveryQueriesRetainCountAndLatestStringTraceObs
     const auto log = task.debugString();
     EXPECT_NE(log.find("last_recovery_query={trace=\"read-35\",all_safe=false"), std::string::npos);
     EXPECT_NE(log.find("state=UNKNOWN,admission_closed=false,grpc_code=unknown,error=\"not observed\""), std::string::npos);
-    EXPECT_TRUE(task.completeRecovery());
+    EXPECT_TRUE(task.completeRecovery(*cleanup));
 }
 
 TEST(FrozenTaskTest, InvalidTargetPreparationDoesNotAcquireAnyFrozenHold) {
@@ -499,6 +507,7 @@ TEST(FrozenTaskTest, InvalidTargetPreparationDoesNotAcquireAnyFrozenHold) {
 }
 
 TEST(FrozenTaskTest, DiagnosticsRetainEveryRankOutcomeAndAllEndpointRoles) {
+    auto cleanup = std::make_shared<TransferCompletionCleanup>();
     auto target_pool = makePool("target-log");
     const auto target = heldBlock(target_pool);
     auto info = execution(31, {{nullptr, 7, 2, "unknown-source-pool"}}, {{target_pool, target, 4}});
@@ -568,11 +577,12 @@ TEST(FrozenTaskTest, DiagnosticsRetainEveryRankOutcomeAndAllEndpointRoles) {
         EXPECT_NE(log.find(expected), std::string::npos) << expected << '\n' << log;
     }
     EXPECT_EQ(task.failure().execution_diagnostics->ranks.size(), 2u);
-    task.completeRecovery();
+    task.completeRecovery(*cleanup);
     EXPECT_NE(task.debugString().find("state=RELEASED"), std::string::npos);
 }
 
 TEST(FrozenTaskTest, RemoteReadPreservesStringIdentityAndRejectsAnotherTraceNamespace) {
+    auto cleanup = std::make_shared<TransferCompletionCleanup>();
     auto pool = makePool("remote-target");
     const auto block = heldBlock(pool);
     auto info = execution(33, {}, {{pool, block, 0}});
@@ -609,8 +619,8 @@ TEST(FrozenTaskTest, RemoteReadPreservesStringIdentityAndRejectsAnotherTraceName
                               "worker_transfer_status=3", "sdk_failed=false"}) {
         EXPECT_NE(log.find(field), std::string::npos) << field << '\n' << log;
     }
-    task.completeRecovery();
-    task.completeRecovery();
+    task.completeRecovery(*cleanup);
+    task.completeRecovery(*cleanup);
     EXPECT_EQ(pool->treeRefCount(block), 1u);
 }
 

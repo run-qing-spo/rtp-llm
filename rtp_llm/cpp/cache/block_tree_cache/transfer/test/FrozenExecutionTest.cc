@@ -138,6 +138,7 @@ protected:
 };
 
 TEST_F(FrozenExecutionTest, ActualExecutionTraceOwnsDeduplicatedTargetsBeforeBusinessRelease) {
+    auto cleanup = std::make_shared<TransferCompletionCleanup>();
     const auto target = allocateTarget();
     auto first  = std::make_shared<ObservableContext>();
     auto second = std::make_shared<ObservableContext>();
@@ -178,7 +179,7 @@ TEST_F(FrozenExecutionTest, ActualExecutionTraceOwnsDeduplicatedTargetsBeforeBus
     EXPECT_EQ(std::get<uint64_t>(frozen[0]->failure().execution_diagnostics->trace_id), executor->submitted_traces[0]);
     EXPECT_TRUE(host_->isAllocated(target));
     EXPECT_EQ(host_->treeRefCount(target), 1u);
-    frozen[0]->completeRecovery();
+    frozen[0]->completeRecovery(*cleanup);
     EXPECT_FALSE(host_->isAllocated(target));
     EXPECT_TRUE(dispatcher.frozenTasks().empty());
     EXPECT_TRUE(dispatcher.frozenTasks().empty());
@@ -187,6 +188,7 @@ TEST_F(FrozenExecutionTest, ActualExecutionTraceOwnsDeduplicatedTargetsBeforeBus
 }
 
 TEST_F(FrozenExecutionTest, SeparateExecutionTracesSharingTargetReleaseOnlyTheirOwnHold) {
+    auto cleanup = std::make_shared<TransferCompletionCleanup>();
     const auto target = allocateTarget();
     auto first  = std::make_shared<ObservableContext>();
     auto second = std::make_shared<ObservableContext>();
@@ -211,14 +213,14 @@ TEST_F(FrozenExecutionTest, SeparateExecutionTracesSharingTargetReleaseOnlyTheir
     EXPECT_EQ(host_->referencedBlocksNum(BlockTreeRefType::FROZEN), 1u);
 
     host_->decTreeRef(target, BlockTreeRefType::LOAD);
-    frozen[0]->completeRecovery();
-    frozen[0]->completeRecovery();
+    frozen[0]->completeRecovery(*cleanup);
+    frozen[0]->completeRecovery(*cleanup);
     EXPECT_TRUE(host_->isFrozen(target));
     EXPECT_EQ(host_->treeRefCount(target), 1u);
     const auto remaining = dispatcher.frozenTasks();
     ASSERT_EQ(remaining.size(), 1u);
     EXPECT_EQ(remaining.front(), frozen[1]);
-    frozen[1]->completeRecovery();
+    frozen[1]->completeRecovery(*cleanup);
     EXPECT_FALSE(host_->isAllocated(target));
     EXPECT_EQ(host_->referencedBlocksNum(BlockTreeRefType::FROZEN), 0u);
     EXPECT_TRUE(dispatcher.frozenTasks().empty());
@@ -252,9 +254,9 @@ TEST_F(FrozenExecutionTest, MixedSafeAndBannedReleaseForgetsEveryRankButPreserve
     EXPECT_EQ(cleanup->size(), 0u);
     // The cleanup route includes every participant, independent of diagnostics.
     EXPECT_EQ(frozen->recoverySnapshot().last_query, nullptr);
-    EXPECT_TRUE(frozen->completeRecovery());
+    EXPECT_TRUE(frozen->completeRecovery(*cleanup));
     EXPECT_FALSE(host_->isAllocated(target));
-    EXPECT_FALSE(frozen->completeRecovery());
+    EXPECT_FALSE(frozen->completeRecovery(*cleanup));
     EXPECT_EQ(cleanup->size(), 1u);
     frozen.reset();
     size_t forget_calls = 0;
@@ -302,8 +304,8 @@ TEST_F(FrozenExecutionTest, OrdinarySafeReleaseStillQueuesForgetExactlyOnce) {
     const auto frozen = dispatcher.frozenTasks();
     ASSERT_EQ(frozen.size(), 1u);
     EXPECT_EQ(cleanup->size(), 0u);
-    EXPECT_TRUE(frozen.front()->completeRecovery());
-    EXPECT_FALSE(frozen.front()->completeRecovery());
+    EXPECT_TRUE(frozen.front()->completeRecovery(*cleanup));
+    EXPECT_FALSE(frozen.front()->completeRecovery(*cleanup));
     EXPECT_FALSE(host_->isAllocated(target));
     EXPECT_EQ(cleanup->size(), 1u);
     const auto summary = cleanup->drain([&](const auto&, const auto& traces, int) {
@@ -346,6 +348,7 @@ TEST_F(FrozenExecutionTest, KnownBusinessOutcomesWithoutSafetyProofDoNotFreeze) 
 }
 
 TEST_F(FrozenExecutionTest, EvictUnknownFreezesHostAndDiskTargets) {
+    auto cleanup = std::make_shared<TransferCompletionCleanup>();
     TempDirGuard dir("evict_frozen_targets");
     auto disk = makeDiskPool(16, 8, dir.path, std::make_unique<StatusDiskBlockIO>(DiskBlockIOStatus::OK));
     groups_ = {makeTestGroupSet(0, makeTestTopology({makeTestGroupBase()}), {"group0"}, {}, host_, disk)};
@@ -373,13 +376,14 @@ TEST_F(FrozenExecutionTest, EvictUnknownFreezesHostAndDiskTargets) {
         EXPECT_TRUE(pool->isAllocated(target));
         const auto frozen = dispatcher.frozenTasks();
         ASSERT_EQ(frozen.size(), 1u);
-        frozen[0]->completeRecovery();
+        frozen[0]->completeRecovery(*cleanup);
         EXPECT_FALSE(pool->isAllocated(target));
         dispatcher.waitForTransfers();
     }
 }
 
 TEST_F(FrozenExecutionTest, RepeatedChildCompletionCannotFinishBeforeOtherInternalBatch) {
+    auto cleanup = std::make_shared<TransferCompletionCleanup>();
     const auto first_target = allocateTarget();
     const auto second_target = allocateTarget();
     auto first  = std::make_shared<ObservableContext>();
@@ -404,12 +408,13 @@ TEST_F(FrozenExecutionTest, RepeatedChildCompletionCannotFinishBeforeOtherIntern
     EXPECT_EQ(frozen[0]->snapshot().target_block_count, 2u);
     EXPECT_EQ(host_->treeRefCount(first_target), 2u);
     EXPECT_EQ(host_->treeRefCount(second_target), 2u);
-    frozen[0]->completeRecovery();
+    frozen[0]->completeRecovery(*cleanup);
     host_->decTreeRef({first_target, second_target}, BlockTreeRefType::LOAD);
     dispatcher.waitForTransfers();
 }
 
 TEST_F(FrozenExecutionTest, RegistrationFailureFreezesBeforeRollbackAndLateDeliveryCannotRefreeze) {
+    auto cleanup = std::make_shared<TransferCompletionCleanup>();
     const auto target = allocateTarget();
     auto context = std::make_shared<ObservableContext>(true);
     auto executor = engine({context});
@@ -430,7 +435,7 @@ TEST_F(FrozenExecutionTest, RegistrationFailureFreezesBeforeRollbackAndLateDeliv
     EXPECT_EQ(completions, 1u);
     EXPECT_EQ(dispatcher.frozenTasks().size(), 1u);
     EXPECT_EQ(host_->treeRefCount(target), 1u);
-    frozen[0]->completeRecovery();
+    frozen[0]->completeRecovery(*cleanup);
     ASSERT_FALSE(host_->isAllocated(target));
     EXPECT_TRUE(dispatcher.frozenTasks().empty());
     context->deliver(unknownExecution());
@@ -442,6 +447,7 @@ TEST_F(FrozenExecutionTest, RegistrationFailureFreezesBeforeRollbackAndLateDeliv
 }
 
 TEST_F(FrozenExecutionTest, ExceptionAfterInlineCompletionDoesNotReplaceOrRepeatItsOutcome) {
+    auto cleanup = std::make_shared<TransferCompletionCleanup>();
     const auto target = allocateTarget();
     for (const bool completion_unknown : {false, true}) {
         SCOPED_TRACE(completion_unknown);
@@ -461,7 +467,7 @@ TEST_F(FrozenExecutionTest, ExceptionAfterInlineCompletionDoesNotReplaceOrRepeat
         ASSERT_EQ(frozen.size(), completion_unknown ? 1u : 0u);
         EXPECT_EQ(host_->treeRefCount(target), completion_unknown ? 2u : 1u);
         if (completion_unknown)
-            frozen[0]->completeRecovery();
+            frozen[0]->completeRecovery(*cleanup);
         dispatcher.waitForTransfers();
     }
     host_->decTreeRef(target, BlockTreeRefType::LOAD);
@@ -489,6 +495,7 @@ TEST_F(FrozenExecutionTest, WorkerLocalExecutionDoesNotCreateAnotherCoordinatorH
 
 
 TEST_F(FrozenExecutionTest, ReleasedEnumerationDestroysManagedRecordOutsideTheDispatcherLock) {
+    auto cleanup = std::make_shared<TransferCompletionCleanup>();
     const auto target = allocateTarget();
     auto context = std::make_shared<ObservableContext>();
     auto executor = engine({context});
@@ -520,12 +527,12 @@ TEST_F(FrozenExecutionTest, ReleasedEnumerationDestroysManagedRecordOutsideTheDi
             delete query;
         }));
     std::weak_ptr<FrozenTask> weak_record = record;
-    EXPECT_TRUE(record->completeRecovery());
+    EXPECT_TRUE(record->completeRecovery(*cleanup));
     record.reset();
     EXPECT_FALSE(weak_record.expired());
-    BoundedThread<bool> cleanup([dispatcher] { return dispatcher->frozenTasks().empty(); });
-    ASSERT_EQ(cleanup.waitFor(std::chrono::seconds(3)), std::future_status::ready);
-    EXPECT_TRUE(cleanup.get());
+    BoundedThread<bool> enumerate([dispatcher] { return dispatcher->frozenTasks().empty(); });
+    ASSERT_EQ(enumerate.waitFor(std::chrono::seconds(3)), std::future_status::ready);
+    EXPECT_TRUE(enumerate.get());
     EXPECT_TRUE(weak_record.expired());
     EXPECT_EQ(destroyed->load(), 1u);
     EXPECT_TRUE(dispatcher->frozenTasks().empty());
@@ -537,6 +544,7 @@ TEST_F(FrozenExecutionTest, ReleasedEnumerationDestroysManagedRecordOutsideTheDi
 }
 
 TEST_F(FrozenExecutionTest, ConcurrentEnumerationKeepsReleasingRecordUntilCapacityNotificationReturns) {
+    auto cleanup = std::make_shared<TransferCompletionCleanup>();
     const auto target = allocateTarget();
     auto entered = std::make_shared<std::promise<void>>();
     auto notifying = entered->get_future();
@@ -557,7 +565,7 @@ TEST_F(FrozenExecutionTest, ConcurrentEnumerationKeepsReleasingRecordUntilCapaci
     ASSERT_EQ(records.size(), 1u);
     auto record = records.front();
     host_->decTreeRef(target, BlockTreeRefType::LOAD);
-    BoundedThread<bool> recovery([record] { return record->completeRecovery(); });
+    BoundedThread<bool> recovery([record, cleanup] { return record->completeRecovery(*cleanup); });
     ASSERT_EQ(notifying.wait_for(std::chrono::seconds(3)), std::future_status::ready);
     EXPECT_EQ(record->snapshot().state, FrozenTask::State::RELEASING);
     BoundedThread<bool> enumerate([dispatcher, record] {
@@ -571,7 +579,7 @@ TEST_F(FrozenExecutionTest, ConcurrentEnumerationKeepsReleasingRecordUntilCapaci
     });
     ASSERT_EQ(enumerate.waitFor(std::chrono::seconds(2)), std::future_status::ready);
     EXPECT_TRUE(enumerate.get());
-    EXPECT_FALSE(record->completeRecovery());
+    EXPECT_FALSE(record->completeRecovery(*cleanup));
     release->set_value();
     ASSERT_EQ(recovery.waitFor(std::chrono::seconds(2)), std::future_status::ready);
     EXPECT_TRUE(recovery.get());

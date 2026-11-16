@@ -24,13 +24,6 @@ bool sameTarget(const TransferCompletionTarget& first, const TransferCompletionT
 
 }  // namespace
 
-void TransferCompletionCleanup::Prepared::submit() noexcept {
-    if (node_.empty())
-        return;
-    auto owner = std::move(owner_);
-    owner->submit(node_);
-}
-
 TransferCompletionCleanup::Prepared
 TransferCompletionCleanup::prepare(TransferCompletionTarget target, TransferExecutionTrace trace_id) {
     if (!validTransferExecutionTrace(trace_id))
@@ -44,7 +37,6 @@ TransferCompletionCleanup::prepare(TransferCompletionTarget target, TransferExec
             throw std::invalid_argument("completion cleanup requires unique original ranks and addresses");
     }
     Prepared prepared;
-    prepared.owner_ = shared_from_this();
     prepared.node_.push_back(Entry{std::move(target), std::move(trace_id)});
     return prepared;
 }
@@ -54,7 +46,10 @@ size_t TransferCompletionCleanup::size() const {
     return outstanding_;
 }
 
-void TransferCompletionCleanup::submit(std::list<Entry>& node) noexcept {
+void TransferCompletionCleanup::enqueue(Prepared&& prepared) noexcept {
+    auto& node = prepared.node_;
+    if (node.empty())
+        return;
     size_t count = 0;
     size_t threshold = 0;
     {

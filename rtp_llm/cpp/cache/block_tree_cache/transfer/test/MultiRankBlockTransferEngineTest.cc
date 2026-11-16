@@ -743,6 +743,7 @@ TEST_F(MultiRankBlockTransferEngineTest, DispatcherUsesDistinctExecutionIdentity
 }
 
 TEST_F(MultiRankBlockTransferEngineTest, FrozenExecutionKeepsWireTraceAndSeparateRankEvidence) {
+    auto cleanup = std::make_shared<TransferCompletionCleanup>();
     auto state = std::make_shared<MultiRankBlockTransferRpcState>();
     MultiRankBlockTransferRpcConfig failed{true, MemoryOperationResponsePB::IO_FAILED, grpc::Status::OK, state};
     failed.error_info = ErrorInfo(ErrorCode::EXECUTION_EXCEPTION, "rank zero disk failure");
@@ -808,7 +809,7 @@ TEST_F(MultiRankBlockTransferEngineTest, FrozenExecutionKeepsWireTraceAndSeparat
             EXPECT_EQ(request.transfer_trace_id(), std::get<uint64_t>(record.execution().trace_id));
     }
     EXPECT_EQ(pool->treeRefCount(target), 1u);
-    records.front()->completeRecovery();
+    records.front()->completeRecovery(*cleanup);
     EXPECT_EQ(pool->freeBlocksNum(), pool->totalBlocksNum());
 }
 
@@ -2223,6 +2224,7 @@ TEST_F(MultiRankBlockTransferEngineTest, ExpiredOrdinaryTransferNeedsNoRemoteCom
 }
 
 static void mixedBroadcastLosesCompletion(bool through_dispatcher) {
+    TransferCompletionCleanup cleanup;
     MultiRankBlockTransferRpcConfig                               config{true,
                                            MemoryOperationResponsePB::OK,
                                            grpc::Status(grpc::StatusCode::UNAVAILABLE, "mixed batch completion lost")};
@@ -2255,7 +2257,7 @@ static void mixedBroadcastLosesCompletion(bool through_dispatcher) {
         EXPECT_EQ(dispatcher.frozenTasks().front()->snapshot().target_block_count, 2u);
         groups[0]->hostPool()->decTreeRef(first, BlockTreeRefType::EVICTION);
         groups[1]->hostPool()->decTreeRef(second, BlockTreeRefType::EVICTION);
-        dispatcher.frozenTasks().front()->completeRecovery();
+        dispatcher.frozenTasks().front()->completeRecovery(cleanup);
     } else {
         auto context = engine->execute(std::move(task));
         context->waitDone();

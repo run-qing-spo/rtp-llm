@@ -410,6 +410,7 @@ bool KVCacheManager::startFrozenTaskRecovery() {
     }
     try {
         auto recovery = std::make_unique<FrozenTaskRecovery>(
+            *completion_cleanup_,
             [this] { return frozenTasks(); },
             [this](const FrozenTask::ExecutionInfo& execution, int timeout_ms) {
                 return queryTransferCompletion(execution, timeout_ms);

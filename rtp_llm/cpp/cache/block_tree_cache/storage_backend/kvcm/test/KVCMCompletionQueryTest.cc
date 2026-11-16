@@ -547,7 +547,7 @@ TEST(KVCMCompletionQueryTest, QueryDoesNotThawAndRecoveryWaitsForAllOriginalRpcP
     EXPECT_EQ(record->snapshot().state, FrozenTask::State::FROZEN);
     EXPECT_TRUE(environment.device_pool->isFrozen(environment.block_id));
     EXPECT_EQ(environment.device_pool->refCount(environment.block_id), references);
-    FrozenTaskRecovery recovery([coordinator] { return coordinator->frozenTasks(); },
+    FrozenTaskRecovery recovery(*cleanup, [coordinator] { return coordinator->frozenTasks(); },
                                 [coordinator](const auto& execution, int timeout_ms) {
                                     return coordinator->queryTransferCompletion(execution, timeout_ms);
                                 });
@@ -684,6 +684,7 @@ TEST(KVCMCompletionQueryTest, QueryDoesNotThawAndRecoveryWaitsForAllOriginalRpcP
 }
 
 TEST(KVCMCompletionQueryTest, LocalSdkFailuresRecoverOnlyProvenHoldsOnSharedTargets) {
+    auto cleanup = std::make_shared<TransferCompletionCleanup>();
     autil::EnvGuard feature("RTP_LLM_REMOTE_CACHE_ENABLE_DECODE_PUBLISH", "0");
     autil::EnvGuard async("RTP_LLM_STREAM_ASYNC", "0");
     auto worker = std::make_shared<QueryWorker>();
@@ -714,7 +715,7 @@ TEST(KVCMCompletionQueryTest, LocalSdkFailuresRecoverOnlyProvenHoldsOnSharedTarg
         EXPECT_NE(record->failure().execution_diagnostics->failure_reason, "rpc_timeout");
         messages.push_back(record->failure().status.ToString());
     }
-    FrozenTaskRecovery recovery([manager = worker->manager] { return manager->frozenTasks(); },
+    FrozenTaskRecovery recovery(*cleanup, [manager = worker->manager] { return manager->frozenTasks(); },
                                 [manager = worker->manager](const auto& execution, int timeout_ms) {
                                     return manager->queryTransferCompletion(execution, timeout_ms);
                                 });

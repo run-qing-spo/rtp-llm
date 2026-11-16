@@ -113,7 +113,7 @@ public:
     FrozenTask& operator=(const FrozenTask&) = delete;
 
     void freeze() noexcept;
-    bool completeRecovery() noexcept;
+    bool completeRecovery(TransferCompletionCleanup& cleanup_queue) noexcept;
 
     // Construct immutable query results before calling this method. Recording
     // does not change the original failure or release any target references.

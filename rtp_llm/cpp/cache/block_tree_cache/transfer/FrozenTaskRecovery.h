@@ -37,7 +37,7 @@ public:
         bool   cleanup_failed{false};
     };
 
-    FrozenTaskRecovery(TaskSource source, Query query, Cleanup cleanup = {});
+    FrozenTaskRecovery(TransferCompletionCleanup& cleanup_queue, TaskSource source, Query query, Cleanup cleanup = {});
     ~FrozenTaskRecovery();
 
     // The owner serializes start/stop/destruction outside the recovery thread.
@@ -57,6 +57,8 @@ private:
     void backgroundLoop(int interval_ms, int query_timeout_ms) noexcept;
     void logPending(const Summary& summary) noexcept;
 
+    // The owner keeps the queue alive until recovery has stopped.
+    TransferCompletionCleanup& cleanup_queue_;
     TaskSource source_;
     Query      query_;
     Cleanup    cleanup_;

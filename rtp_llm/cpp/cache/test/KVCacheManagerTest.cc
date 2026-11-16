@@ -2290,7 +2290,8 @@ TEST_F(KVCacheManagerTest, FrozenTransferRecoveryObservesLateProofWithoutRepeati
     ASSERT_NE(engine->last_proof, nullptr);
     EXPECT_FALSE(record->execution().remote);
     EXPECT_EQ(manager->completion_cleanup_->size(), 0u);
-    FrozenTaskRecovery recovery([&] { return manager->frozenTasks(); },
+    TransferCompletionCleanup cleanup;
+    FrozenTaskRecovery recovery(cleanup, [&] { return manager->frozenTasks(); },
                                 [&](const auto& execution, int timeout_ms) {
                                     return manager->queryTransferCompletion(execution, timeout_ms);
                                 });

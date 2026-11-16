@@ -158,7 +158,8 @@ public:
                 }
                 ready = std::move(cleanup);
             }
-            ready.submit();
+            if (owner->completion_cleanup_)
+                owner->completion_cleanup_->enqueue(std::move(ready));
         }
 
         static void observeResponse(TransferRankSnapshot& rank, const RemoteOperationResponsePB& response) noexcept {

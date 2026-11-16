@@ -405,7 +405,8 @@ protected:
             }, write ? "evict" : "load");
     }
     size_t recover(const std::vector<std::shared_ptr<FrozenTask>>& records) {
-        FrozenTaskRecovery recovery(
+        TransferCompletionCleanup cleanup;
+        FrozenTaskRecovery recovery(cleanup,
             [this] { return coordinator_->frozenTasks(); },
             [this](const auto& execution, int timeout) {
                 TransferCompletionIdentity identity;

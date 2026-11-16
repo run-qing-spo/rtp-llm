@@ -36,7 +36,7 @@ TransferCompletionForgetResult doneResult(const std::vector<TransferExecutionTra
 
 TEST(TransferCompletionCleanupTest, FailureDiagnosticsAreRateLimitedWithoutBlockingRetries) {
     auto cleanup = std::make_shared<Cleanup>();
-    cleanup->prepare(localTarget(), uint64_t{99}).submit();
+    cleanup->enqueue(cleanup->prepare(localTarget(), uint64_t{99}));
     size_t calls = 0;
     const Cleanup::Forget forget = [&](const auto&, const auto&, int) -> TransferCompletionForgetResult {
         ++calls;
@@ -65,10 +65,10 @@ TEST(TransferCompletionCleanupTest, PreparedNodesRequireExplicitSubmissionAndMov
     EXPECT_EQ(queue->size(), 0u);
     auto moved = std::move(prepared);
     EXPECT_TRUE(prepared.empty());
-    prepared.submit();
+    queue->enqueue(std::move(prepared));
     EXPECT_EQ(queue->size(), 0u);
-    moved.submit();
-    moved.submit();
+    queue->enqueue(std::move(moved));
+    queue->enqueue(std::move(moved));
     EXPECT_TRUE(moved.empty());
     EXPECT_EQ(queue->size(), 1u);
     {
@@ -84,6 +84,28 @@ TEST(TransferCompletionCleanupTest, PreparedNodesRequireExplicitSubmissionAndMov
     EXPECT_EQ(summary.forgotten, 1u);
     EXPECT_EQ(summary.pending, 0u);
     EXPECT_FALSE(summary.failed);
+}
+
+TEST(TransferCompletionCleanupTest, PreparedDoesNotRetainQueueAndCanBeEnqueuedIntoStackOwnedQueue) {
+    Cleanup::Prepared prepared;
+    std::weak_ptr<Cleanup> original;
+    {
+        auto queue = std::make_shared<Cleanup>();
+        original = queue;
+        prepared = queue->prepare(localTarget(), uint64_t{3});
+    }
+    EXPECT_TRUE(original.expired());
+    EXPECT_FALSE(prepared.empty());
+    Cleanup destination;
+    destination.enqueue(std::move(prepared));
+    destination.enqueue(std::move(prepared));
+    EXPECT_EQ(destination.size(), 1u);
+    const auto summary = destination.drain([](const auto&, const auto& traces, int) {
+        EXPECT_EQ(traces, (std::vector<TransferExecutionTrace>{uint64_t{3}}));
+        return doneResult(traces);
+    }, 10);
+    EXPECT_EQ(summary.forgotten, 1u);
+    EXPECT_EQ(summary.pending, 0u);
 }
 
 TEST(TransferCompletionCleanupTest, PreparationRejectsInvalidIdentityAndRoutingBeforeQueueing) {
@@ -105,10 +127,10 @@ TEST(TransferCompletionCleanupTest, BatchesByOriginalRoutingAndNeverExceedsProto
         auto target = remoteTarget();
         if (trace % 2 == 0)
             std::swap(target.peers[0], target.peers[1]);
-        queue->prepare(std::move(target), trace).submit();
+        queue->enqueue(queue->prepare(std::move(target), trace));
     }
-    queue->prepare(localTarget(), std::string("1")).submit();
-    queue->prepare({true, {{0, "another-worker:100"}}}, uint64_t{1}).submit();
+    queue->enqueue(queue->prepare(localTarget(), std::string("1")));
+    queue->enqueue(queue->prepare({true, {{0, "another-worker:100"}}}, uint64_t{1}));
     size_t calls = 0;
     size_t remote_batches = 0;
     const auto summary = queue->drain([&](const auto& target, const auto& traces, int timeout) {
@@ -143,7 +165,7 @@ TEST(TransferCompletionCleanupTest, PartialSuccessRemovesOnlyConfirmedEntriesAnd
     auto queue = std::make_shared<Cleanup>();
     const std::vector<TransferExecutionTrace> traces{uint64_t{1}, std::string("1"), uint64_t{2}};
     for (const auto& trace : traces)
-        queue->prepare(localTarget(), trace).submit();
+        queue->enqueue(queue->prepare(localTarget(), trace));
     size_t calls = 0;
     const auto partial = queue->drain([&](const auto&, const auto& batch, int) {
         ++calls;
@@ -170,7 +192,7 @@ TEST(TransferCompletionCleanupTest, PartialSuccessRemovesOnlyConfirmedEntriesAnd
 
 TEST(TransferCompletionCleanupTest, MissingOrMismatchedAcknowledgementsCannotRemoveEntries) {
     auto queue = std::make_shared<Cleanup>();
-    queue->prepare(localTarget(), uint64_t{7}).submit();
+    queue->enqueue(queue->prepare(localTarget(), uint64_t{7}));
     const auto missing = queue->drain([](const auto&, const auto&, int) {
         return TransferCompletionForgetResult{};
     }, 10);
@@ -193,7 +215,7 @@ TEST(TransferCompletionCleanupTest, CallbackExceptionsAndLostAcknowledgementsRem
     TransferTaskRegistry registry;
     ASSERT_TRUE(registry.begin(uint64_t{11}));
     ASSERT_TRUE(registry.finish(uint64_t{11}, true));
-    queue->prepare(localTarget(), uint64_t{11}).submit();
+    queue->enqueue(queue->prepare(localTarget(), uint64_t{11}));
     size_t calls = 0;
     const auto lost = queue->drain([&](const auto&, const auto&, int) -> TransferCompletionForgetResult {
         ++calls;
@@ -214,12 +236,12 @@ TEST(TransferCompletionCleanupTest, CallbackExceptionsAndLostAcknowledgementsRem
 
 TEST(TransferCompletionCleanupTest, ReentrantSubmissionsWaitForTheNextDrain) {
     auto queue = std::make_shared<Cleanup>();
-    queue->prepare(localTarget(), uint64_t{1}).submit();
+    queue->enqueue(queue->prepare(localTarget(), uint64_t{1}));
     size_t calls = 0;
     const auto first = queue->drain([&](const auto&, const auto& traces, int) {
         ++calls;
         EXPECT_EQ(queue->size(), 1u);
-        queue->prepare(localTarget(), uint64_t{2}).submit();
+        queue->enqueue(queue->prepare(localTarget(), uint64_t{2}));
         EXPECT_EQ(queue->size(), 2u);
         return doneResult(traces);
     }, 10);
@@ -236,8 +258,8 @@ TEST(TransferCompletionCleanupTest, ReentrantSubmissionsWaitForTheNextDrain) {
 
 TEST(TransferCompletionCleanupTest, StopAndInvalidDrainArgumentsKeepEveryUnprocessedNode) {
     auto queue = std::make_shared<Cleanup>();
-    queue->prepare(localTarget(), uint64_t{1}).submit();
-    queue->prepare(remoteTarget(), uint64_t{2}).submit();
+    queue->enqueue(queue->prepare(localTarget(), uint64_t{1}));
+    queue->enqueue(queue->prepare(remoteTarget(), uint64_t{2}));
     size_t calls = 0;
     bool stop = true;
     const Cleanup::Forget forget = [&](const auto&, const auto& traces, int) {
@@ -275,7 +297,7 @@ TEST(TransferCompletionCleanupTest, ConcurrentSubmissionRetainsEveryEntryBeyondW
     for (size_t producer = 0; producer < producers; ++producer) {
         threads.emplace_back([&, producer] {
             for (uint64_t offset = 1; offset <= per_producer; ++offset)
-                queue->prepare(localTarget(), producer * per_producer + offset).submit();
+                queue->enqueue(queue->prepare(localTarget(), producer * per_producer + offset));
         });
     }
     for (auto& thread : threads)

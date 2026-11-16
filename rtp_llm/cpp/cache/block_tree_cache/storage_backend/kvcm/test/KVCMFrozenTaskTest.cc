@@ -286,6 +286,7 @@ TEST(KVCMFrozenTaskTest, TargetsExcludeLocalPrefixFilteredLinearStateAndUnsentTa
 }
 
 TEST(KVCMFrozenTaskTest, DistinctReadTracesOwnIndependentHoldsOnTheSameTarget) {
+    auto cleanup = std::make_shared<TransferCompletionCleanup>();
     autil::EnvGuard feature("RTP_LLM_REMOTE_CACHE_ENABLE_DECODE_PUBLISH", "0");
     autil::EnvGuard async("RTP_LLM_STREAM_ASYNC", "0");
     auto environment = makeBackendEnvironment("kvcm_frozen_shared_target");
@@ -313,7 +314,7 @@ TEST(KVCMFrozenTaskTest, DistinctReadTracesOwnIndependentHoldsOnTheSameTarget) {
     const auto first_failure = records[0]->failure().status.ToString();
     EXPECT_NE(std::get<std::string>(records[0]->execution().trace_id),
               std::get<std::string>(records[1]->execution().trace_id));
-    records[0]->completeRecovery();
+    records[0]->completeRecovery(*cleanup);
     EXPECT_EQ(records[0]->snapshot().state, FrozenState::RELEASED);
     EXPECT_EQ(records[1]->snapshot().state, FrozenState::FROZEN);
     EXPECT_EQ(environment.device_pool->refCount(environment.block_id), before + 1);
@@ -327,10 +328,10 @@ TEST(KVCMFrozenTaskTest, DistinctReadTracesOwnIndependentHoldsOnTheSameTarget) {
     }
     // Removing table ownership does not invalidate an earlier observer's snapshot.
     EXPECT_EQ(records[0]->failure().status.ToString(), first_failure);
-    records[0]->completeRecovery();
+    records[0]->completeRecovery(*cleanup);
     EXPECT_EQ(environment.device_pool->refCount(environment.block_id), before + 1);
     EXPECT_EQ(environment.device_pool->treeRefCount(environment.block_id), 1u);
-    records[1]->completeRecovery();
+    records[1]->completeRecovery(*cleanup);
     EXPECT_EQ(environment.device_pool->refCount(environment.block_id), before);
     EXPECT_EQ(environment.device_pool->treeRefCount(environment.block_id), 0u);
     EXPECT_FALSE(environment.device_pool->isFrozen(environment.block_id));
@@ -343,6 +344,7 @@ TEST(KVCMFrozenTaskTest, DistinctReadTracesOwnIndependentHoldsOnTheSameTarget) {
 }
 
 TEST(KVCMFrozenTaskTest, EnumerationKeepsReleasingRecordUntilCapacityNotificationFinishes) {
+    auto cleanup = std::make_shared<TransferCompletionCleanup>();
     using block_tree_cache_test::BoundedThread;
     using namespace std::chrono_literals;
     autil::EnvGuard feature("RTP_LLM_REMOTE_CACHE_ENABLE_DECODE_PUBLISH", "0");
@@ -374,10 +376,10 @@ TEST(KVCMFrozenTaskTest, EnumerationKeepsReleasingRecordUntilCapacityNotificatio
     const std::weak_ptr<FrozenTask> observed = record;
     records.clear();
     environment->device_pool->decRef(environment->block_id);
-    BoundedThread<bool> releasing([record, environment, backend] {
+    BoundedThread<bool> releasing([record, environment, backend, cleanup] {
         (void)environment;
         (void)backend;
-        return record->completeRecovery();
+        return record->completeRecovery(*cleanup);
     });
     ASSERT_EQ(entered_future.wait_for(5s), std::future_status::ready);
     EXPECT_EQ(record->snapshot().state, FrozenState::RELEASING);

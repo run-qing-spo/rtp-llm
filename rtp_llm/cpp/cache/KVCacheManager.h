@@ -206,8 +206,8 @@ private:
 
     BlockTreeCachePtr                           block_tree_cache_;
     std::shared_ptr<BroadcastManager>           transfer_broadcast_manager_;
-    std::unique_ptr<FrozenTaskRecovery>         frozen_task_recovery_;
     std::shared_ptr<TransferCompletionCleanup> completion_cleanup_;
+    std::unique_ptr<FrozenTaskRecovery>         frozen_task_recovery_;
     std::shared_ptr<KVCacheAllocationWaitState> allocation_wait_state_;
 
     mutable std::mutex          cache_store_mutex_;

@@ -756,8 +756,8 @@ TEST(BlockTransferDispatcherTest, FrozenExecutionTransfersCleanupOwnershipUntilR
     ASSERT_NE(engine->submitted_proofs_.front(), nullptr);
     engine->submitted_proofs_.front()->report(true);
     EXPECT_EQ(cleanup->size(), 0u);  // SAFE evidence alone does not retire a frozen owner.
-    EXPECT_TRUE(records.front()->completeRecovery());
-    EXPECT_FALSE(records.front()->completeRecovery());
+    EXPECT_TRUE(records.front()->completeRecovery(*cleanup));
+    EXPECT_FALSE(records.front()->completeRecovery(*cleanup));
     EXPECT_EQ(records.front()->snapshot().state, FrozenTask::State::RELEASED);
     EXPECT_FALSE(host->isAllocated(*block));
     EXPECT_EQ(cleanup->size(), 1u);

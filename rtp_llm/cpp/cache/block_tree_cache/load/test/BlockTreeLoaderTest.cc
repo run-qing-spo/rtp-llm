@@ -1230,6 +1230,7 @@ TEST(BlockTreeLoaderTest, DecodeSourcesValidateTheActualFallbackSwaWindow) {
 }
 
 TEST(BlockTreeLoaderTest, UnknownDiskCompletionFreezesOnlyItsTargetBeforeHostCompletion) {
+    auto cleanup = std::make_shared<TransferCompletionCleanup>();
     if (!cudaAvailable()) {
         GTEST_SKIP() << "CUDA not available";
     }
@@ -1285,7 +1286,7 @@ TEST(BlockTreeLoaderTest, UnknownDiskCompletionFreezesOnlyItsTargetBeforeHostCom
     for (const auto& target : frozen_tasks.front()->execution().descriptors.front().targets) {
         EXPECT_EQ(target.pool->treeRefCount(target.block), 1u);
     }
-    frozen_tasks.front()->completeRecovery();
+    frozen_tasks.front()->completeRecovery(*cleanup);
     env->expectFullyReclaimed();
 }
 

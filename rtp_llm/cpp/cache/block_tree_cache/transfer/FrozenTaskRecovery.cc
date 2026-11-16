@@ -110,7 +110,9 @@ void logReleased(const FrozenTask& task) noexcept {
 
 }  // namespace
 
-FrozenTaskRecovery::FrozenTaskRecovery(TaskSource source, Query query, Cleanup cleanup):
+FrozenTaskRecovery::FrozenTaskRecovery(TransferCompletionCleanup& cleanup_queue,
+                                       TaskSource source, Query query, Cleanup cleanup):
+    cleanup_queue_(cleanup_queue),
     source_(std::move(source)), query_(std::move(query)), cleanup_(std::move(cleanup)) {}
 
 FrozenTaskRecovery::~FrozenTaskRecovery() {
@@ -246,7 +248,7 @@ FrozenTaskRecovery::runOnce(int query_timeout_ms, const std::function<bool()>& s
         if (safe && task->snapshot().state == FrozenTask::State::FROZEN) {
             if (stop())
                 break;
-            if (task->completeRecovery()) {
+            if (task->completeRecovery(cleanup_queue_)) {
                 ++summary.released;
                 logReleased(*task);
             }

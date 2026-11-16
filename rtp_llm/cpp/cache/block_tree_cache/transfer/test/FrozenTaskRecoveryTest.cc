@@ -84,6 +84,7 @@ TransferCompletionQueryResult proof(const FrozenTask::ExecutionInfo& execution,
 }
 
 TEST(FrozenTaskRecoveryTest, LocalNumericAndStringProofsRecoverNonRpcFailuresWithoutChangingBusinessResults) {
+    auto cleanup = std::make_shared<TransferCompletionCleanup>();
     auto pool = makePool();
     const auto first_block = hold(pool);
     const auto second_block = hold(pool);
@@ -101,7 +102,7 @@ TEST(FrozenTaskRecoveryTest, LocalNumericAndStringProofsRecoverNonRpcFailuresWit
             return ordinary.queryLocal(std::vector<uint64_t>{*numeric}).front();
         return kvcm.queryLocal(std::vector<std::string>{std::get<std::string>(trace)}).front();
     });
-    FrozenTaskRecovery recovery([&] { return std::vector<std::shared_ptr<FrozenTask>>{first, second}; },
+    FrozenTaskRecovery recovery(*cleanup, [&] { return std::vector<std::shared_ptr<FrozenTask>>{first, second}; },
                                 [&](const auto& execution, int timeout) {
                                     TransferCompletionIdentity identity;
                                     identity.trace_id = execution.trace_id;
@@ -140,12 +141,13 @@ TEST(FrozenTaskRecoveryTest, LocalNumericAndStringProofsRecoverNonRpcFailuresWit
 }
 
 TEST(FrozenTaskRecoveryTest, RemoteRecoveryWaitsForEveryRankAndPreservesPendingQuerySnapshots) {
+    auto cleanup = std::make_shared<TransferCompletionCleanup>();
     auto pool = makePool();
     const auto block = hold(pool);
     auto task = makeTask(uint64_t{81}, pool, block, true);
     task->freeze();
     State last = State::RUNNING;
-    FrozenTaskRecovery recovery([&] { return std::vector<std::shared_ptr<FrozenTask>>{task}; },
+    FrozenTaskRecovery recovery(*cleanup, [&] { return std::vector<std::shared_ptr<FrozenTask>>{task}; },
                                 [&](const auto& execution, int) { return proof(execution, last); });
     EXPECT_EQ(recovery.runOnce(1000).released, 0u);
     const auto running_snapshot = task->recoverySnapshot().last_query;
@@ -162,12 +164,13 @@ TEST(FrozenTaskRecoveryTest, RemoteRecoveryWaitsForEveryRankAndPreservesPendingQ
 }
 
 TEST(FrozenTaskRecoveryTest, InconsistentOrMismatchedInjectedProofNeverReleasesTargets) {
+    auto cleanup = std::make_shared<TransferCompletionCleanup>();
     auto pool = makePool();
     const auto block = hold(pool);
     auto task = makeTask(uint64_t{91}, pool, block, true);
     task->freeze();
     int malformed = 0;
-    FrozenTaskRecovery recovery([&] { return std::vector<std::shared_ptr<FrozenTask>>{task}; },
+    FrozenTaskRecovery recovery(*cleanup, [&] { return std::vector<std::shared_ptr<FrozenTask>>{task}; },
         [&](const auto& execution, int) {
             auto result = proof(execution);
             switch (malformed) {
@@ -216,7 +219,7 @@ TEST(FrozenTaskRecoveryTest, ConfirmedMissingReleasesAndForgetsEveryParticipantW
     ASSERT_TRUE(completed.finish(uint64_t{92}, true));
     ASSERT_EQ(banned.queryAndBlockMissing(std::vector<uint64_t>{92}).front(), State::REJECTED);
     int mode = 0;
-    FrozenTaskRecovery recovery([&] { return std::vector<std::shared_ptr<FrozenTask>>{task}; },
+    FrozenTaskRecovery recovery(*cleanup, [&] { return std::vector<std::shared_ptr<FrozenTask>>{task}; },
         [&](const auto& execution, int) {
             auto result = proof(execution, State::UNKNOWN);
             result.all_safe = true;
@@ -262,6 +265,7 @@ TEST(FrozenTaskRecoveryTest, ConfirmedMissingReleasesAndForgetsEveryParticipantW
 }
 
 TEST(FrozenTaskRecoveryTest, QueryAndSourceExceptionsDoNotPreventLaterTasksOrPasses) {
+    auto cleanup = std::make_shared<TransferCompletionCleanup>();
     auto pool = makePool();
     std::vector<std::shared_ptr<FrozenTask>> tasks;
     for (uint64_t trace = 1; trace <= 3; ++trace) {
@@ -270,7 +274,7 @@ TEST(FrozenTaskRecoveryTest, QueryAndSourceExceptionsDoNotPreventLaterTasksOrPas
     }
     bool source_fails = true;
     bool query_fails = true;
-    FrozenTaskRecovery recovery([&] {
+    FrozenTaskRecovery recovery(*cleanup, [&] {
         if (source_fails)
             throw std::runtime_error("source unavailable");
         return tasks;
@@ -300,6 +304,7 @@ TEST(FrozenTaskRecoveryTest, QueryAndSourceExceptionsDoNotPreventLaterTasksOrPas
 }
 
 TEST(FrozenTaskRecoveryTest, SharedBlockRemainsHeldUntilEachExecutionHasSafeProof) {
+    auto cleanup = std::make_shared<TransferCompletionCleanup>();
     auto pool = makePool();
     const auto block = hold(pool);
     auto first = makeTask(uint64_t{1}, pool, block);
@@ -309,7 +314,7 @@ TEST(FrozenTaskRecoveryTest, SharedBlockRemainsHeldUntilEachExecutionHasSafeProo
     pool->decTreeRef(block, BlockTreeRefType::CACHE);
     EXPECT_EQ(pool->treeRefCount(block), 2u);
     bool second_safe = false;
-    FrozenTaskRecovery recovery([&] { return std::vector<std::shared_ptr<FrozenTask>>{first, second}; },
+    FrozenTaskRecovery recovery(*cleanup, [&] { return std::vector<std::shared_ptr<FrozenTask>>{first, second}; },
         [&](const auto& execution, int) {
             return proof(execution, std::get<uint64_t>(execution.trace_id) == 1 || second_safe ?
                                         State::BUFFER_SAFE : State::RUNNING);
@@ -326,6 +331,7 @@ TEST(FrozenTaskRecoveryTest, SharedBlockRemainsHeldUntilEachExecutionHasSafeProo
 }
 
 TEST(FrozenTaskRecoveryTest, ConcurrentPassIsSkippedAndManualReleaseRaceIsCountedExactlyOnce) {
+    auto cleanup = std::make_shared<TransferCompletionCleanup>();
     for (bool manual_release : {false, true}) {
         auto pool = makePool();
         const auto block = hold(pool);
@@ -336,7 +342,7 @@ TEST(FrozenTaskRecoveryTest, ConcurrentPassIsSkippedAndManualReleaseRaceIsCounte
         auto release = std::make_shared<std::promise<void>>();
         auto released = release->get_future().share();
         auto calls = std::make_shared<std::atomic<size_t>>(0);
-        auto recovery = std::make_shared<FrozenTaskRecovery>(
+        auto recovery = std::make_shared<FrozenTaskRecovery>(*cleanup,
             [task] { return std::vector<std::shared_ptr<FrozenTask>>{task}; },
             [entered, released, calls](const auto& execution, int) {
                 ++*calls;
@@ -352,19 +358,20 @@ TEST(FrozenTaskRecoveryTest, ConcurrentPassIsSkippedAndManualReleaseRaceIsCounte
         EXPECT_EQ(concurrent.queried, 0u);
         EXPECT_EQ(calls->load(), 1u);
         if (manual_release) {
-            EXPECT_TRUE(task->completeRecovery());
+            EXPECT_TRUE(task->completeRecovery(*cleanup));
         }
         release->set_value();
         ASSERT_EQ(first.waitFor(2s), std::future_status::ready);
         EXPECT_EQ(first.get().released, manual_release ? 0u : 1u);
         EXPECT_EQ(task->snapshot().state, FrozenTask::State::RELEASED);
         EXPECT_EQ(pool->treeRefCount(block), 1u);
-        EXPECT_FALSE(task->completeRecovery());
+        EXPECT_FALSE(task->completeRecovery(*cleanup));
         EXPECT_FALSE(recovery->runOnce(1000).skipped_running);
     }
 }
 
 TEST(FrozenTaskRecoveryTest, StopBeforeQueryAfterQueryAndImmediatelyBeforeReleaseIsConservative) {
+    auto cleanup = std::make_shared<TransferCompletionCleanup>();
     for (int phase = 0; phase < 4; ++phase) {
         SCOPED_TRACE(phase);
         auto pool = makePool();
@@ -373,7 +380,7 @@ TEST(FrozenTaskRecoveryTest, StopBeforeQueryAfterQueryAndImmediatelyBeforeReleas
         task->freeze();
         bool queried = false;
         size_t checks_after_query = 0;
-        FrozenTaskRecovery recovery([&] { return std::vector<std::shared_ptr<FrozenTask>>{task}; },
+        FrozenTaskRecovery recovery(*cleanup, [&] { return std::vector<std::shared_ptr<FrozenTask>>{task}; },
             [&](const auto& execution, int) { queried = true; return proof(execution); });
         const auto stopped = recovery.runOnce(1000, [&] {
             if (phase == 0)
@@ -393,16 +400,17 @@ TEST(FrozenTaskRecoveryTest, StopBeforeQueryAfterQueryAndImmediatelyBeforeReleas
 }
 
 TEST(FrozenTaskRecoveryTest, InvalidTimeoutAndNonFrozenRecordsNeverInvokeQuery) {
+    auto cleanup = std::make_shared<TransferCompletionCleanup>();
     auto pool = makePool();
     auto prepared = makeTask(uint64_t{1}, pool, hold(pool));
     auto released = makeTask(uint64_t{2}, pool, hold(pool));
     released->freeze();
-    ASSERT_TRUE(released->completeRecovery());
+    ASSERT_TRUE(released->completeRecovery(*cleanup));
     auto frozen = makeTask(uint64_t{3}, pool, hold(pool));
     frozen->freeze();
     size_t sources = 0;
     size_t queries = 0;
-    FrozenTaskRecovery recovery([&] {
+    FrozenTaskRecovery recovery(*cleanup, [&] {
         ++sources;
         return std::vector<std::shared_ptr<FrozenTask>>{nullptr, prepared, released, frozen};
     }, [&](const auto& execution, int timeout) {
@@ -434,12 +442,13 @@ bool waitForRecoveryCondition(Predicate predicate) {
 }
 
 TEST(FrozenTaskRecoveryTest, BackgroundRetriesFailureAndRunningUntilSafeWithoutRepeatingRelease) {
+    auto cleanup = std::make_shared<TransferCompletionCleanup>();
     auto pool = makePool();
     const auto block = hold(pool);
     auto task = makeTask(std::string("background-read"), pool, block);
     task->freeze();
     auto calls = std::make_shared<std::atomic<size_t>>(0);
-    auto recovery = std::make_shared<FrozenTaskRecovery>(
+    auto recovery = std::make_shared<FrozenTaskRecovery>(*cleanup,
         [task] { return std::vector<std::shared_ptr<FrozenTask>>{task}; },
         [calls](const auto& execution, int timeout) {
             EXPECT_EQ(timeout, 200);
@@ -456,15 +465,16 @@ TEST(FrozenTaskRecoveryTest, BackgroundRetriesFailureAndRunningUntilSafeWithoutR
     EXPECT_EQ(pool->treeRefCount(block), 1u);
     EXPECT_EQ(task->failure().status.code(), ErrorCode::TRANSFER_COMPLETION_UNKNOWN);
     EXPECT_FALSE(task->failure().buffer_safe);
-    EXPECT_FALSE(task->completeRecovery());
+    EXPECT_FALSE(task->completeRecovery(*cleanup));
 }
 
 TEST(FrozenTaskRecoveryTest, BackgroundEmptySourceWaitIsInterruptibleAndStartIsSingleUse) {
+    auto cleanup = std::make_shared<TransferCompletionCleanup>();
     auto calls = std::make_shared<std::atomic<size_t>>(0);
     auto queried = std::make_shared<std::atomic<size_t>>(0);
     auto entered = std::make_shared<std::promise<void>>();
     auto first_pass = entered->get_future();
-    auto recovery = std::make_shared<FrozenTaskRecovery>(
+    auto recovery = std::make_shared<FrozenTaskRecovery>(*cleanup,
         [calls, entered] {
             if (calls->fetch_add(1) == 0)
                 entered->set_value();
@@ -488,13 +498,14 @@ TEST(FrozenTaskRecoveryTest, BackgroundEmptySourceWaitIsInterruptibleAndStartIsS
     EXPECT_EQ(calls->load(), 1u);
     EXPECT_EQ(queried->load(), 0u);
 
-    FrozenTaskRecovery never_started([] { return std::vector<std::shared_ptr<FrozenTask>>{}; }, {});
+    FrozenTaskRecovery never_started(*cleanup, [] { return std::vector<std::shared_ptr<FrozenTask>>{}; }, {});
     never_started.stop();
     never_started.stop();
     EXPECT_FALSE(never_started.start(10, 1000));
 }
 
 TEST(FrozenTaskRecoveryTest, StopDuringQueryWaitsForExitAndDiscardsSafeReleasePermission) {
+    auto cleanup = std::make_shared<TransferCompletionCleanup>();
     auto pool = makePool();
     const auto block = hold(pool);
     auto task = makeTask(uint64_t{51}, pool, block);
@@ -504,7 +515,7 @@ TEST(FrozenTaskRecoveryTest, StopDuringQueryWaitsForExitAndDiscardsSafeReleasePe
     auto release = std::make_shared<std::promise<void>>();
     auto released = release->get_future().share();
     auto calls = std::make_shared<std::atomic<size_t>>(0);
-    auto recovery = std::make_shared<FrozenTaskRecovery>(
+    auto recovery = std::make_shared<FrozenTaskRecovery>(*cleanup,
         [task] { return std::vector<std::shared_ptr<FrozenTask>>{task}; },
         [entered, released, calls](const auto& execution, int) {
             ++*calls;
@@ -536,12 +547,13 @@ TEST(FrozenTaskRecoveryTest, StopDuringQueryWaitsForExitAndDiscardsSafeReleasePe
 }
 
 TEST(FrozenTaskRecoveryTest, DestructionJoinsSleepingWorkerBeforeReleasingCallbackDependencies) {
+    TransferCompletionCleanup cleanup;
     auto dependency = std::make_shared<int>(7);
     std::weak_ptr<int> weak_dependency = dependency;
     auto entered = std::make_shared<std::promise<void>>();
     auto first_pass = entered->get_future();
     auto calls = std::make_shared<std::atomic<size_t>>(0);
-    auto recovery = std::make_unique<FrozenTaskRecovery>(
+    auto recovery = std::make_unique<FrozenTaskRecovery>(cleanup,
         [dependency, entered, calls] {
             EXPECT_EQ(*dependency, 7);
             if (calls->fetch_add(1) == 0)
@@ -561,6 +573,7 @@ TEST(FrozenTaskRecoveryTest, DestructionJoinsSleepingWorkerBeforeReleasingCallba
 }
 
 TEST(FrozenTaskRecoveryTest, CleanupRunsBeforeRecoveryAndEitherPhaseMayFailIndependently) {
+    auto cleanup = std::make_shared<TransferCompletionCleanup>();
     auto pool = makePool();
     const auto block = hold(pool);
     auto task = makeTask(uint64_t{81}, pool, block);
@@ -568,7 +581,7 @@ TEST(FrozenTaskRecoveryTest, CleanupRunsBeforeRecoveryAndEitherPhaseMayFailIndep
     std::vector<std::string> order;
     bool source_fails = true;
     bool cleanup_fails = false;
-    FrozenTaskRecovery recovery(
+    FrozenTaskRecovery recovery(*cleanup,
         [&] {
             order.push_back("source");
             if (source_fails)
@@ -603,9 +616,9 @@ TEST(FrozenTaskRecoveryTest, CleanupRunsBeforeRecoveryAndEitherPhaseMayFailIndep
 
 TEST(FrozenTaskRecoveryTest, FailedCleanupWithoutFrozenTasksTriggersSummaryLog) {
     auto cleanup = std::make_shared<TransferCompletionCleanup>();
-    cleanup->prepare({false, {{0, "local"}}}, uint64_t{83}).submit();
+    cleanup->enqueue(cleanup->prepare({false, {{0, "local"}}}, uint64_t{83}));
     bool throws = false;
-    FrozenTaskRecovery recovery(
+    FrozenTaskRecovery recovery(*cleanup,
         [] { return std::vector<std::shared_ptr<FrozenTask>>{}; },
         FrozenTaskRecovery::Query{},
         [&](int timeout, const auto& stopped) {
@@ -628,14 +641,14 @@ TEST(FrozenTaskRecoveryTest, FailedCleanupWithoutFrozenTasksTriggersSummaryLog) 
 
 TEST(FrozenTaskRecoveryTest, StopDuringForgetJoinsCurrentCallWithoutWaitingForPendingCleanup) {
     auto cleanup = std::make_shared<TransferCompletionCleanup>();
-    cleanup->prepare({false, {{0, "local"}}}, uint64_t{82}).submit();
+    cleanup->enqueue(cleanup->prepare({false, {{0, "local"}}}, uint64_t{82}));
     auto entered = std::make_shared<std::promise<void>>();
     auto in_forget = entered->get_future();
     auto release = std::make_shared<std::promise<void>>();
     auto released = release->get_future().share();
     auto calls = std::make_shared<std::atomic<size_t>>(0);
     auto sources = std::make_shared<std::atomic<size_t>>(0);
-    auto recovery = std::make_shared<FrozenTaskRecovery>(
+    auto recovery = std::make_shared<FrozenTaskRecovery>(*cleanup,
         [sources] {
             ++*sources;
             return std::vector<std::shared_ptr<FrozenTask>>{};
