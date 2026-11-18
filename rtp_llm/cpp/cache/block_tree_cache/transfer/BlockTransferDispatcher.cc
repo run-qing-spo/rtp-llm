@@ -277,15 +277,15 @@ void BlockTransferDispatcher::submitCoordinated(TransferTask task,
                 completion_cleanup_->enqueue(std::move(execution->cleanup));
             throw;
         }
+        auto result = std::move(observation_failure);
         try {
             if (context && context->done()) {
-                execution->complete(context->result());
-                return;
+                result = context->result();
             }
         } catch (...) {
             // A failed observation cannot prove a submitted execution safe.
         }
-        execution->complete(std::move(observation_failure));
+        execution->complete(std::move(result));
     }
 }
 
