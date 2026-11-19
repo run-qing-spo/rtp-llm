@@ -55,14 +55,7 @@ struct BlockTransferDispatcher::CoordinatedExecution {
         if (owner->completion_cleanup_) {
             TransferCompletionTarget target;
             target.remote = owner->multi_rank_engine_ != nullptr;
-            if (target.remote) {
-                const auto& addresses = owner->multi_rank_engine_->participantAddresses();
-                target.peers.reserve(addresses.size());
-                for (size_t rank = 0; rank < addresses.size(); ++rank)
-                    target.peers.push_back({rank, addresses[rank]});
-            } else {
-                target.peers.push_back({0, "local"});
-            }
+            target.rank_count = target.remote ? owner->multi_rank_engine_->workerCount() : 1;
             cleanup = owner->completion_cleanup_->prepare(std::move(target), TransferCompletionKey{task.traceId()});
         }
     }
@@ -232,14 +225,7 @@ BlockTransferDispatcher::describeExecution(const TransferTask& task) const {
     info.registry_type = RegistryType::BLOCK_TRANSFER;
     info.trace_id = std::to_string(task.traceId());
     info.uses_rpc = multi_rank_engine_ != nullptr;
-    if (multi_rank_engine_) {
-        const auto& addresses = multi_rank_engine_->participantAddresses();
-        info.participant_ranks.reserve(addresses.size());
-        for (size_t rank = 0; rank < addresses.size(); ++rank)
-            info.participant_ranks.push_back({rank, addresses[rank]});
-    } else {
-        info.participant_ranks.push_back({0, "local"});
-    }
+    info.rank_count = info.uses_rpc ? multi_rank_engine_->workerCount() : 1;
     const auto& groups = multi_rank_engine_ ? multi_rank_engine_->groupSets() : per_rank_engine_->groupSets();
     for (const auto& descriptor : task.descriptors()) {
         const GroupSet* group = descriptor.group_set_id < groups.size() ? groups[descriptor.group_set_id].get() : nullptr;
