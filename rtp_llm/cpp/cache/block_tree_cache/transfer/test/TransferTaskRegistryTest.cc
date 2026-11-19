@@ -100,6 +100,25 @@ TEST(TransferTaskRegistryTest, ForgetPreservesRunningExecutionUntilProofArrives)
     EXPECT_EQ(registry.size(), 0u);
 }
 
+TEST(TransferTaskRegistryTest, ForcedForgetRemovesRunningAndPreservesLateAdmissionFences) {
+    auto now = Registry::Clock::now();
+    Registry registry([&] { return now; });
+    ASSERT_TRUE(registry.begin(uint64_t{71}));
+    EXPECT_EQ(registry.forget(uint64_t{71}), ForgetResult::RUNNING);
+    EXPECT_EQ(registry.forget(uint64_t{71}, true), ForgetResult::DONE);
+    EXPECT_FALSE(registry.finish(uint64_t{71}, true));
+    EXPECT_EQ(registry.size(), 0u);
+    EXPECT_EQ(registry.forget("late", true), ForgetResult::DONE);
+    EXPECT_EQ(registry.forget("late", true), ForgetResult::DONE);
+    EXPECT_FALSE(registry.begin("late"));
+    EXPECT_EQ(registry.size(), 0u);
+    EXPECT_EQ(registry.forget("absent", true), ForgetResult::DONE);
+    now += std::chrono::hours(1);
+    EXPECT_EQ(registry.forget("absent", true), ForgetResult::DONE);
+    EXPECT_EQ(registry.cleanupExpiredMissing(), 1u);
+    EXPECT_EQ(registry.size(), 0u);
+}
+
 TEST(TransferTaskRegistryTest, ForgetRejectsInvalidIdsWithoutTouchingStringZero) {
     Registry registry;
     ASSERT_TRUE(registry.begin("0"));

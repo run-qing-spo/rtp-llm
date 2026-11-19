@@ -264,7 +264,7 @@ FrozenTaskRecovery::runOnce(int query_timeout_ms, const std::function<bool()>& s
         if ((safe || expired) && snapshot.state == FrozenTask::State::FROZEN) {
             if (stop())
                 break;
-            if (task->unfreeze()) {
+            if (task->unfreeze(expired && !safe)) {
                 ++summary.released;
                 try {
                     if (on_released_)

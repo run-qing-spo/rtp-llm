@@ -109,11 +109,7 @@ public:
         return trace_id != 0 && finish(std::to_string(trace_id), buffer_safe);
     }
 
-    // Admitted executions require safety proof before deletion. Absent records
-    // are already forgotten; a later finish never recreates them. Missing fences
-    // survive client cleanup: DONE lets the caller retire its cleanup record,
-    // while the server still rejects a late execution until arrival or expiry.
-    ForgetResult forget(const std::string& trace_id) {
+    ForgetResult forget(const std::string& trace_id, bool force = false) {
         if (trace_id.empty()) {
             logEvent("forget", trace_id, State::UNKNOWN, "invalid");
             return ForgetResult::INVALID;
@@ -121,6 +117,10 @@ public:
         std::lock_guard<std::mutex> lock(mutex_);
         const auto                  it = records_.find(trace_id);
         if (it == records_.end()) {
+            if (force) {
+                records_.emplace(trace_id, State::REJECTED);
+                touchMissing(trace_id, "force_forget");
+            }
             logEvent("forget", trace_id, State::UNKNOWN, "already_missing");
             return ForgetResult::DONE;
         }
@@ -128,17 +128,19 @@ public:
             logEvent("forget", trace_id, State::REJECTED, "fence_retained_cleanup_acknowledged");
             return ForgetResult::DONE;
         }
-        if (it->second != State::BUFFER_SAFE) {
+        if (!force && it->second != State::BUFFER_SAFE) {
             logEvent("forget", trace_id, it->second, "retained");
             return ForgetResult::RUNNING;
         }
+        const auto state = it->second;
         records_.erase(it);
-        logEvent("forget", trace_id, State::BUFFER_SAFE, "removed");
+        logged_query_states_.erase(trace_id);
+        logEvent("forget", trace_id, state, force ? "force_removed" : "removed");
         return ForgetResult::DONE;
     }
 
-    ForgetResult forget(uint64_t trace_id) {
-        return trace_id == 0 ? ForgetResult::INVALID : forget(std::to_string(trace_id));
+    ForgetResult forget(uint64_t trace_id, bool force = false) {
+        return trace_id == 0 ? ForgetResult::INVALID : forget(std::to_string(trace_id), force);
     }
 
     // Recovery queries close admission for missing identities atomically with

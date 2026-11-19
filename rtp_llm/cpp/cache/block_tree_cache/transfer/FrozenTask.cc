@@ -162,7 +162,7 @@ void FrozenTask::freeze() noexcept {
     state_        = State::FROZEN;
 }
 
-bool FrozenTask::unfreeze() noexcept {
+bool FrozenTask::unfreeze(bool force) noexcept {
     {
         std::lock_guard<std::mutex> lock(mutex_);
         if (state_ != State::FROZEN) {
@@ -177,7 +177,7 @@ bool FrozenTask::unfreeze() noexcept {
     }
     // Cleanup acknowledges every participant after physical release. Workers
     // delete safe completion records but retain admission bans on forget.
-    cleanup_.submit();
+    cleanup_.submit(force);
     {
         std::lock_guard<std::mutex> lock(mutex_);
         released_at_us_ = wallTimeUs();

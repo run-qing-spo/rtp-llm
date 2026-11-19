@@ -953,6 +953,7 @@ enum TransferCompletionForgetStatusPB {
 
 message TransferCompletionForgetRequestPB {
     repeated TransferCompletionKeyPB keys = 1;
+    bool force = 2;
 }
 
 message TransferCompletionForgetEntryPB {

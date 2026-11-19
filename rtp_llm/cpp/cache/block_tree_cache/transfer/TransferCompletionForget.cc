@@ -170,7 +170,7 @@ TransferCompletionForget::forget(const TransferCompletionTarget& target,
                 continue;
             }
             try {
-                setOutcome(row, local_forget_(traces[index]));
+                setOutcome(row, local_forget_(traces[index], target.force));
             } catch (const std::exception& error) {
                 row.error = error.what();
             } catch (...) {
@@ -190,6 +190,7 @@ TransferCompletionForget::forget(const TransferCompletionTarget& target,
     try {
         std::vector<FunctionRequestPB> requests(target.peers.size());
         for (auto& request : requests) {
+            request.mutable_completion_forget()->set_force(target.force);
             for (const auto index : valid_indices)
                 encodeKey(traces[index], *request.mutable_completion_forget()->add_keys());
         }

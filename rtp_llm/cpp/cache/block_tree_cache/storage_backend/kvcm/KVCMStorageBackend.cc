@@ -1535,8 +1535,8 @@ public:
         completion_cleanup_ = std::move(cleanup);
     }
 
-    TransferTaskRegistry::ForgetResult forgetReadCompletion(const std::string& trace_id) {
-        const auto result = read_registry_->forget(trace_id);
+    TransferTaskRegistry::ForgetResult forgetReadCompletion(const std::string& trace_id, bool force) {
+        const auto result = read_registry_->forget(trace_id, force);
         if (result == TransferTaskRegistry::ForgetResult::INVALID) {
             RTP_LLM_LOG_WARNING("KVCM READ completion forget rejected rank=%ld trace=%s reason=empty_trace",
                                 static_cast<long>(parallelism_config_.world_rank), trace_id.c_str());
@@ -3087,8 +3087,8 @@ TransferTaskRegistry::State KVCMStorageBackend::queryReadCompletion(const std::s
     return impl_->queryReadCompletion(trace_id);
 }
 
-TransferTaskRegistry::ForgetResult KVCMStorageBackend::forgetReadCompletion(const std::string& trace_id) {
-    return impl_->forgetReadCompletion(trace_id);
+TransferTaskRegistry::ForgetResult KVCMStorageBackend::forgetReadCompletion(const std::string& trace_id, bool force) {
+    return impl_->forgetReadCompletion(trace_id, force);
 }
 
 void KVCMStorageBackend::setCompletionCleanup(std::shared_ptr<TransferCompletionCleanup> cleanup) {

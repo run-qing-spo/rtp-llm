@@ -21,6 +21,7 @@ struct TransferCompletionPeer {
 struct TransferCompletionTarget {
     bool                                remote{false};
     std::vector<TransferCompletionPeer> peers;
+    bool                                force{false};
 };
 
 struct TransferCompletionRankResult {

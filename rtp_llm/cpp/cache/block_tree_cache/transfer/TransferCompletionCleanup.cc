@@ -12,7 +12,7 @@ namespace rtp_llm {
 namespace {
 
 bool sameTarget(const TransferCompletionTarget& first, const TransferCompletionTarget& second) noexcept {
-    if (first.remote != second.remote || first.peers.size() != second.peers.size())
+    if (first.remote != second.remote || first.force != second.force || first.peers.size() != second.peers.size())
         return false;
     for (size_t rank = 0; rank < first.peers.size(); ++rank) {
         if (first.peers[rank].rank != second.peers[rank].rank
@@ -24,9 +24,10 @@ bool sameTarget(const TransferCompletionTarget& first, const TransferCompletionT
 
 }  // namespace
 
-void TransferCompletionCleanup::Prepared::submit() noexcept {
+void TransferCompletionCleanup::Prepared::submit(bool force) noexcept {
     if (node_.empty())
         return;
+    node_.front().target.force = force;
     auto owner = std::move(owner_);
     owner->submit(node_);
 }
