@@ -44,6 +44,8 @@
 namespace rtp_llm {
 namespace {
 
+using block_transfer_engine_test::bufferSafeResult;
+
 using block_tree_cache_test::allocateDeviceBlocksForTest;
 using block_tree_cache_test::MultiNodeBlocks;
 using block_tree_cache_test::releaseLowerTierSeedRefs;
@@ -439,8 +441,8 @@ public:
         if (context == nullptr) {
             return false;
         }
-        context->complete(success ? ErrorInfo::OkStatus() :
-                                    ErrorInfo(ErrorCode::EXECUTION_EXCEPTION, "injected failure"));
+        const auto status = success ? ErrorInfo::OkStatus() : ErrorInfo(ErrorCode::EXECUTION_EXCEPTION, "injected failure");
+        context->complete(bufferSafeResult(status));
         return true;
     }
 
@@ -459,7 +461,7 @@ public:
             }
             context = contexts_[batch_index];
         }
-        context->complete(std::move(result));
+        context->complete(bufferSafeResult(std::move(result)));
         return true;
     }
 

@@ -27,6 +27,8 @@
 namespace rtp_llm {
 namespace {
 
+using block_transfer_engine_test::bufferSafeResult;
+
 using block_tree_cache_test::FullSWAEnvironment;
 using block_tree_cache_test::FullSWAEnvironmentOptions;
 using block_tree_cache_test::cudaAvailable;
@@ -798,7 +800,7 @@ public:
             released = released_;
         }
         if (released) {
-            context->complete(ErrorInfo::OkStatus());
+            context->complete(bufferSafeResult());
         }
         cv_.notify_all();
         return context;
@@ -814,7 +816,8 @@ public:
         return tasks_.size();
     }
 
-    void completeResult(size_t index, TransferResult result) {
+    void completeResult(size_t index, TransferResult result, bool buffer_safe = true) {
+        result.buffer_safe = buffer_safe;
         std::shared_ptr<TransferBatchAsyncContext> context;
         {
             std::lock_guard<std::mutex> lock(mutex_);
@@ -831,7 +834,7 @@ public:
             contexts  = contexts_;
         }
         for (const auto& context : contexts) {
-            context->complete(ErrorInfo::OkStatus());
+            context->complete(bufferSafeResult());
         }
     }
 
@@ -873,7 +876,7 @@ public:
                     }
                 }
             }
-            context->complete(std::move(result));
+            context->complete(bufferSafeResult(std::move(result)));
         }
     }
 
@@ -1272,7 +1275,7 @@ TEST(BlockTreeLoaderTest, UnknownDiskCompletionFreezesOnlyItsTargetBeforeHostCom
     auto refs = bindTargets(*env, owner);
     ASSERT_TRUE(owner->commit());
     ASSERT_TRUE(engine->waitForBatches(2));
-    engine->completeResult(1, ErrorInfo(ErrorCode::TRANSFER_COMPLETION_UNKNOWN, "disk completion unknown"));
+    engine->completeResult(1, ErrorInfo(ErrorCode::TRANSFER_COMPLETION_UNKNOWN, "disk completion unknown"), false);
     EXPECT_FALSE(owner->done());
     const auto frozen_tasks = env->cache->transfer_dispatcher_->frozenTasks();
     ASSERT_EQ(frozen_tasks.size(), 1u);
