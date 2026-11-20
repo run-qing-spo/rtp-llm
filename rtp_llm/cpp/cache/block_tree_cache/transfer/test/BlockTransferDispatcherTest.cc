@@ -628,11 +628,11 @@ TEST(BlockTransferDispatcherTest, OverlappingTasksKeepIndependentResults) {
     EXPECT_EQ(healthy_result.copy_error, CacheCopyError::NONE);
 }
 
-TransferCompletionCleanup::Forget localCleanupForget(const BlockTransferDispatcher& dispatcher) {
-    return [&dispatcher](const TransferCompletionTarget& target,
+TransferCompletionCleanup::Forget localCleanupForget(TransferTaskRegistry& worker) {
+    return [&worker](const TransferCompletionTarget& target,
                          const std::vector<TransferCompletionKey>& traces, int timeout_ms) {
-        TransferCompletionForget forget(nullptr, [&dispatcher](const TransferCompletionKey& trace) {
-            return dispatcher.forgetLocalCompletion(trace.numericId());
+        TransferCompletionForget forget(nullptr, [&worker](const TransferCompletionKey& trace) {
+            return worker.forgetTaskInfoOnWorker({trace.trace_id}).front();
         });
         return forget.forget(target, traces, timeout_ms);
     };
@@ -657,7 +657,8 @@ TEST(BlockTransferDispatcherTest, DelayedFreezePreservesOriginalBlocksAcrossCall
         std::deque<std::shared_ptr<TransferAsyncContext>>{first_pending, second_pending}, 1, true, groups);
     BlockTransferDispatcher dispatcher(engine);
     auto                    cleanup = std::make_shared<TransferCompletionCleanup>();
-    dispatcher.setCompletionCleanup(cleanup);
+    auto worker = std::make_shared<TransferTaskRegistry>();
+    dispatcher.setReclaimers(std::make_shared<FrozenTaskReclaimer>(cleanup), worker);
     size_t   settlements  = 0;
     uint64_t parent_trace = 0;
     {
@@ -704,7 +705,7 @@ TEST(BlockTransferDispatcherTest, DelayedFreezePreservesOriginalBlocksAcrossCall
     EXPECT_FALSE(host->isAllocated(*second));
     EXPECT_TRUE(host->isAllocated(*replacement));
     host->decTreeRef(*replacement, BlockTreeRefType::LOAD);
-    EXPECT_EQ(cleanup->drain(localCleanupForget(dispatcher), 1000).forgotten, 1u);
+    EXPECT_EQ(cleanup->drain(localCleanupForget(*worker), 1000).forgotten, 1u);
     dispatcher.waitForTransfers();
 }
 
