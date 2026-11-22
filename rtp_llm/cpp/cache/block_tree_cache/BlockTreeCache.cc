@@ -60,10 +60,13 @@ BlockTreeCache::BlockTreeCache(std::unique_ptr<BlockTree>                     tr
         onWorkflowSettledLocked(check_watermark);
     }) {
     reclaimer_ = std::make_unique<BlockTreeReclaimer>(*this);
-    reclaimer_->bindReclaimers(transfer_dispatcher_.get());
+    if (transfer_dispatcher_)
+        reclaimer_->bindReclaimers(*transfer_dispatcher_);
     metrics_reporter_->initEvictionMetricGroupTypes(tree_->groupSets());
-    if (storage_backend_)
+    if (storage_backend_) {
+        reclaimer_->bindReclaimers(*storage_backend_);
         storage_backend_->setStageMetricsReporter(metrics_reporter_);
+    }
 }
 
 bool BlockTreeCache::init() {

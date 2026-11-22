@@ -690,8 +690,8 @@ TEST(BlockTransferDispatcherTest, DelayedFreezePreservesOriginalBlocksAcrossCall
     const auto records = dispatcher.frozenTasks();
     ASSERT_EQ(records.size(), 1u);
     const auto& execution = records.front()->execution();
-    EXPECT_EQ(execution.trace_id, std::to_string(parent_trace));
-    EXPECT_EQ(execution.trace_id, std::to_string(engine->submitted_trace_ids_.front()));
+    EXPECT_EQ(execution.key.trace_id, std::to_string(parent_trace));
+    EXPECT_EQ(execution.key.trace_id, std::to_string(engine->submitted_trace_ids_.front()));
     ASSERT_EQ(execution.target_blocks.size(), 2u);
     for (size_t index = 0; index < execution.target_blocks.size(); ++index) {
         EXPECT_EQ(execution.target_blocks[index].block, index == 0 ? *first : *second);
