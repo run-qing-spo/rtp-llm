@@ -8,13 +8,14 @@
 #include <functional>
 #include <initializer_list>
 #include <memory>
+#include <mutex>
+#include <stdexcept>
 #include <optional>
 #include <string>
 #include <utility>
 #include <vector>
 
 #include "rtp_llm/cpp/cache/block_tree_cache/TreeNode.h"
-#include "rtp_llm/cpp/cache/block_tree_cache/transfer/TransferBufferSafety.h"
 #include "rtp_llm/cpp/utils/ErrorCode.h"
 #include "rtp_llm/cpp/utils/AsyncProfilingScope.h"
 
@@ -401,6 +402,72 @@ public:
 private:
     const TransferDescriptor* data_{nullptr};
     size_t                    size_{0};
+};
+
+class TransferBufferSafety {
+public:
+    explicit TransferBufferSafety(std::function<void()> safe_callback): safe_callback_(std::move(safe_callback)) {}
+
+    bool bufferSafe() const noexcept {
+        return reported_.load(std::memory_order_acquire);
+    }
+
+    void report(bool buffer_safe) noexcept {
+        if (!buffer_safe || reported_.exchange(true, std::memory_order_acq_rel)) {
+            return;
+        }
+        auto callback = std::move(safe_callback_);
+        if (callback) {
+            callback();
+        }
+    }
+
+private:
+    std::atomic<bool>     reported_{false};
+    std::function<void()> safe_callback_;
+};
+
+class TransferBufferSafetyTracker {
+public:
+    explicit TransferBufferSafetyTracker(std::function<void()> safe_callback):
+        safe_callback_(std::move(safe_callback)) {}
+
+    void addBatch() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (submitting_finished_) {
+            throw std::logic_error("cannot add a transfer batch after submission finished");
+        }
+        ++remaining_;
+    }
+
+    void finishSubmitting() noexcept {
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (submitting_finished_)
+                return;
+            submitting_finished_ = true;
+        }
+        completeBatch();
+    }
+
+    void completeBatch() noexcept {
+        std::function<void()> callback;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (--remaining_ == 0) {
+                callback.swap(safe_callback_);
+            }
+        }
+        if (callback) {
+            callback();
+        }
+    }
+
+private:
+    std::mutex            mutex_;
+    size_t                remaining_{1};
+    bool                  submitting_finished_{false};
+    std::function<void()> safe_callback_;
 };
 
 // Task descriptors are immutable and shared across RPC transport and local batching.

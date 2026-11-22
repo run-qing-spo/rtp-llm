@@ -708,7 +708,7 @@ TEST_F(MultiRankBlockTransferEngineTest, BufferSafeUnknownResultDoesNotFreezeTar
     const auto result = completed.get_future().get();
     EXPECT_EQ(result.status.code(), ErrorCode::TRANSFER_COMPLETION_UNKNOWN);
     EXPECT_TRUE(result.buffer_safe);
-    EXPECT_TRUE(dispatcher.frozenTasks().empty());
+    EXPECT_TRUE(dispatcher.reclaimer_->frozen_.empty());
 }
 
 TEST_F(MultiRankBlockTransferEngineTest, DispatcherPreservesTaskWireIdentityAcrossSubmissions) {
@@ -755,12 +755,11 @@ TEST_F(MultiRankBlockTransferEngineTest, DispatcherPreservesTaskWireIdentityAcro
     // Even successful RPCs from every rank must not grant it implicitly.
     EXPECT_FALSE(first_result.buffer_safe);
     EXPECT_FALSE(second_result.buffer_safe);
-    const auto frozen = dispatcher.frozenTasks();
-    ASSERT_EQ(frozen.size(), 2u);
-    TransferCompletionCleanup cleanup;
-    for (const auto& record : frozen) {
-        EXPECT_TRUE(record->failure().ok());
-        EXPECT_TRUE(record->completeRecovery(cleanup));
+    auto& reclaimer = *dispatcher.reclaimer_;
+    ASSERT_EQ(reclaimer.frozen_.size(), 2u);
+    while (!reclaimer.frozen_.empty()) {
+        const auto key = reclaimer.frozen_.begin()->first;
+        EXPECT_TRUE(reclaimer.release(key, std::nullopt));
     }
     dispatcher.waitForTransfers();
     std::lock_guard<std::mutex> lock(state->mutex);
@@ -1351,15 +1350,15 @@ TEST_F(MultiRankBlockTransferEngineTest, HostLoadRpcFailureFreezesOnlyTargetBefo
         EXPECT_FALSE(error.ok());
         EXPECT_FALSE(host_pool->isFrozen(source));
         EXPECT_TRUE(device_pool->isFrozen(target));
-        const auto records = cache->reclaimer().frozenTasks();
+        const auto& records = cache->reclaimer().frozen_;
         ASSERT_EQ(records.size(), 1u);
-        const auto& execution = records.front()->execution();
+        const auto& execution = records.begin()->second;
         EXPECT_EQ(execution.backend, "local");
-        EXPECT_EQ(execution.rank_count, servers.size());
+        EXPECT_EQ(execution.forget.front().participants.ranks, servers.size());
         std::lock_guard<std::mutex> lock(state->mutex);
         ASSERT_EQ(state->requests.size(), 2u);
         for (const auto& request : state->requests)
-            EXPECT_EQ(execution.key.trace_id, std::to_string(request.transfer_trace_id()));
+            EXPECT_EQ(records.begin()->first, std::to_string(request.transfer_trace_id()));
     });
     ASSERT_TRUE(context->commit());
     context->waitDone();
@@ -2022,7 +2021,6 @@ TEST_F(MultiRankBlockTransferEngineTest, ExpiredOrdinaryTransferNeedsNoRemoteCom
 }
 
 static void mixedBroadcastLosesCompletion(bool through_dispatcher) {
-    TransferCompletionCleanup cleanup;
     MultiRankBlockTransferRpcConfig                               config{true,
                                            MemoryOperationResponsePB::OK,
                                            grpc::Status(grpc::StatusCode::UNAVAILABLE, "mixed batch completion lost")};
@@ -2051,11 +2049,11 @@ static void mixedBroadcastLosesCompletion(bool through_dispatcher) {
                                [&](TransferResult error) { completion.set_value(std::move(error.status)); });
         EXPECT_EQ(finished.get().code(), ErrorCode::TRANSFER_COMPLETION_UNKNOWN);
         dispatcher.waitForTransfers();
-        ASSERT_EQ(dispatcher.frozenTasks().size(), 1u);
-        EXPECT_EQ(dispatcher.frozenTasks().front()->snapshot().target_block_count, 2u);
+        ASSERT_EQ(dispatcher.reclaimer_->frozen_.size(), 1u);
+        EXPECT_EQ(dispatcher.reclaimer_->frozen_.begin()->second.targets.size(), 2u);
         groups[0]->hostPool()->decTreeRef(first, BlockTreeRefType::EVICT);
         groups[1]->hostPool()->decTreeRef(second, BlockTreeRefType::EVICT);
-        dispatcher.frozenTasks().front()->completeRecovery(cleanup);
+        dispatcher.reclaimer_->release(dispatcher.reclaimer_->frozen_.begin()->first, std::nullopt);
     } else {
         auto context = engine->execute(std::move(task));
         context->waitDone();

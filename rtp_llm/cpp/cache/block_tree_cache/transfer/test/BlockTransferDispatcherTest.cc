@@ -1,3 +1,4 @@
+#include "rtp_llm/cpp/cache/block_tree_cache/BlockTreeReclaimer.h"
 #include <gtest/gtest.h>
 #include <grpcpp/grpcpp.h>
 #include <algorithm>
@@ -19,8 +20,6 @@
 #include "rtp_llm/cpp/cache/block_tree_cache/transfer/MultiRankBlockTransferEngine.h"
 #include "rtp_llm/cpp/cache/block_tree_cache/transfer/PerRankBlockTransferEngine.h"
 #include "rtp_llm/cpp/cache/block_tree_cache/transfer/TransferBatchAsyncContext.h"
-#include "rtp_llm/cpp/cache/block_tree_cache/transfer/TransferCompletionCleanup.h"
-#include "rtp_llm/cpp/cache/block_tree_cache/transfer/TransferCompletionForget.h"
 #include "rtp_llm/cpp/cache/block_tree_cache/transfer/test/PerRankBlockTransferEngineTestUtils.h"
 #include "rtp_llm/cpp/model_rpc/BroadcastManager.h"
 
@@ -300,10 +299,9 @@ TEST(BlockTransferDispatcherTest, AsynchronousRunTransferGroupsAndWaitsForEveryB
         EXPECT_FALSE(final_error.ok());
         EXPECT_EQ(host->isFrozen(*target), reject_second_batch);
         if (reject_second_batch) {
-            TransferCompletionCleanup cleanup;
-            const auto tasks = dispatcher.frozenTasks();
-            ASSERT_EQ(tasks.size(), 1u);
-            EXPECT_TRUE(tasks.front()->completeRecovery(cleanup));
+            auto& reclaimer = *dispatcher.reclaimer_;
+            ASSERT_EQ(reclaimer.frozen_.size(), 1u);
+            EXPECT_TRUE(reclaimer.unfreezeTargetBlocksInOneWorkerWithTraceID(reclaimer.frozen_.begin()->first, 0));
             EXPECT_NE(final_error.ToString().find("null context"), std::string::npos);
         }
         host->decTreeRef(*target, BlockTreeRefType::LOAD);
@@ -628,16 +626,6 @@ TEST(BlockTransferDispatcherTest, OverlappingTasksKeepIndependentResults) {
     EXPECT_EQ(healthy_result.copy_error, CacheCopyError::NONE);
 }
 
-TransferCompletionCleanup::Forget localCleanupForget(TransferTaskRegistry& worker) {
-    return [&worker](const TransferCompletionTarget& target,
-                         const std::vector<TransferCompletionKey>& traces, int timeout_ms) {
-        TransferCompletionForget forget(nullptr, [&worker](const TransferCompletionKey& trace) {
-            return worker.forgetTaskInfoOnWorker({trace.trace_id}).front();
-        });
-        return forget.forget(target, traces, timeout_ms);
-    };
-}
-
 TEST(BlockTransferDispatcherTest, DelayedFreezePreservesOriginalBlocksAcrossCallerReplacementAndWorkerBatching) {
     using namespace block_transfer_engine_test;
     auto host = makeHostPool(16, 8);
@@ -656,9 +644,7 @@ TEST(BlockTransferDispatcherTest, DelayedFreezePreservesOriginalBlocksAcrossCall
     auto engine         = std::make_shared<ScriptedPerRankEngine>(
         std::deque<std::shared_ptr<TransferAsyncContext>>{first_pending, second_pending}, 1, true, groups);
     BlockTransferDispatcher dispatcher(engine);
-    auto                    cleanup = std::make_shared<TransferCompletionCleanup>();
-    auto worker = std::make_shared<TransferTaskRegistry>();
-    dispatcher.setReclaimers(std::make_shared<FrozenTaskReclaimer>(cleanup), worker);
+    auto& reclaimer = *dispatcher.reclaimer_;
     size_t   settlements  = 0;
     uint64_t parent_trace = 0;
     {
@@ -687,87 +673,83 @@ TEST(BlockTransferDispatcherTest, DelayedFreezePreservesOriginalBlocksAcrossCall
     EXPECT_EQ(settlements, 0u);
     second_pending->complete(bufferSafeResult());
     ASSERT_EQ(settlements, 1u);
-    const auto records = dispatcher.frozenTasks();
-    ASSERT_EQ(records.size(), 1u);
-    const auto& execution = records.front()->execution();
-    EXPECT_EQ(execution.key.trace_id, std::to_string(parent_trace));
-    EXPECT_EQ(execution.key.trace_id, std::to_string(engine->submitted_trace_ids_.front()));
-    ASSERT_EQ(execution.target_blocks.size(), 2u);
-    for (size_t index = 0; index < execution.target_blocks.size(); ++index) {
-        EXPECT_EQ(execution.target_blocks[index].block, index == 0 ? *first : *second);
-        EXPECT_EQ(execution.target_blocks[index].pool.get(), host.get());
+    ASSERT_EQ(reclaimer.frozen_.size(), 1u);
+    const auto& execution = reclaimer.frozen_.begin()->second;
+    EXPECT_EQ(reclaimer.frozen_.begin()->first, std::to_string(parent_trace));
+    EXPECT_EQ(reclaimer.frozen_.begin()->first, std::to_string(engine->submitted_trace_ids_.front()));
+    ASSERT_EQ(execution.targets.size(), 2u);
+    for (size_t index = 0; index < execution.targets.size(); ++index) {
+        EXPECT_EQ(execution.targets[index].block, index == 0 ? *first : *second);
+        EXPECT_EQ(execution.targets[index].pool.get(), host.get());
     }
     for (const auto& proof : engine->submitted_proofs_)
         proof->report(true);
-    EXPECT_EQ(cleanup->size(), 0u);
-    EXPECT_TRUE(records.front()->completeRecovery(*cleanup));
+    EXPECT_EQ(reclaimer.forget_queue_.size(), 0u);
+    EXPECT_TRUE(reclaimer.unfreezeTargetBlocksInOneWorkerWithTraceID(parent_trace, 0));
     EXPECT_FALSE(host->isAllocated(*first));
     EXPECT_FALSE(host->isAllocated(*second));
     EXPECT_TRUE(host->isAllocated(*replacement));
     host->decTreeRef(*replacement, BlockTreeRefType::LOAD);
-    EXPECT_EQ(cleanup->drain(localCleanupForget(*worker), 1000).forgotten, 1u);
+    reclaimer.drainForget();
+    EXPECT_EQ(reclaimer.size(), 0u);
     dispatcher.waitForTransfers();
 }
 
-class CleanupWorkerService final: public RpcService::Service {
+class ControlledProducer final: public PerRankBlockTransferEngine {
 public:
-    explicit CleanupWorkerService(size_t rank): rank_(rank) {}
-    grpc::Status ExecuteFunction(grpc::ServerContext*, const FunctionRequestPB* request,
-                                 FunctionResponsePB* response) override {
-        if (request->has_mem_request()) {
-            const auto trace = request->mem_request().transfer_trace_id();
-            if (!registry.begin(trace))
-                return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT, "duplicate test execution");
-            registry.finish(trace, true);
-            executed_trace.store(trace);
-            TransferResult result(TransferStatus::OK);
-            result.buffer_safe = true;
-            result.expandBlockErrors(request->mem_request().copy_items_size());
-            BlockTransferRequestConverter::encodeTransferResult(*response->mutable_mem_response(), result);
-            return grpc::Status::OK;
-        }
-        if (request->has_completion_forget()) {
-            auto* reply = response->mutable_completion_forget();
-            reply->set_rank(rank_);
-            for (const auto& key : request->completion_forget().keys()) {
-                auto* entry = reply->add_entries();
-                *entry->mutable_key() = key;
-                const auto result = registry.forget(key.transfer_trace_id());
-                entry->set_status(result == TransferTaskRegistry::ForgetResult::DONE ? TRANSFER_FORGET_DONE :
-                                                                                      TRANSFER_FORGET_RUNNING);
-            }
-            return grpc::Status::OK;
-        }
-        return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT, "unexpected test request");
+    ControlledProducer(): PerRankBlockTransferEngine({}, false, {}, 128, 1, 1, 8, nullptr, 0, 4, true) {}
+    std::shared_ptr<TransferAsyncContext> executeBatch(TransferTask batch) override {
+        auto context = std::make_shared<TransferBatchAsyncContext>(batch.descriptors().size(), nullptr, batch.completionProof());
+        proofs.push_back(batch.completionProof());
+        contexts.push_back(context);
+        on_submit(batch.traceId());
+        return context;
     }
-    TransferTaskRegistry registry;
-    std::atomic<uint64_t> executed_trace{0};
-private:
-    size_t rank_;
+    std::vector<std::shared_ptr<TransferBufferSafety>> proofs;
+    std::vector<std::shared_ptr<TransferBatchAsyncContext>> contexts;
+    std::function<void(uint64_t)> on_submit;
 };
 
-class CleanupWorkerServer {
-public:
-    explicit CleanupWorkerServer(size_t rank): service(rank) {}
-    ~CleanupWorkerServer() {
-        if (server_) {
-            server_->Shutdown(std::chrono::system_clock::now() + std::chrono::seconds(2));
-            server_->Wait();
+TEST(BlockTransferDispatcherTest, OneTraceBecomesSafeOnlyAfterSubmissionAndEveryBatchProof) {
+    auto engine = std::make_shared<ControlledProducer>();
+    BlockTransferDispatcher dispatcher(engine);
+    using State = TransferTaskRegistry::State;
+    TransferTask execution({descriptor(0), descriptor(0), descriptor(0)}, std::chrono::seconds(30));
+    const auto trace = execution.traceId();
+    engine->on_submit = [&](uint64_t id) {
+        EXPECT_EQ(id, trace);
+        if (engine->contexts.size() == 1) {
+            engine->contexts.front()->complete(bufferSafeResult());
         }
-    }
-    bool start() {
-        grpc::ServerBuilder builder;
-        builder.AddListeningPort("127.0.0.1:0", grpc::InsecureServerCredentials(), &port_);
-        builder.RegisterService(&service);
-        server_ = builder.BuildAndStart();
-        return server_ != nullptr && port_ > 0;
-    }
-    std::string address() const { return "127.0.0.1:" + std::to_string(port_); }
-    CleanupWorkerService service;
-private:
-    std::unique_ptr<grpc::Server> server_;
-    int port_{0};
-};
+        EXPECT_EQ(dispatcher.reclaimer_->localState(std::to_string(trace)), State::RUNNING);
+    };
+    TransferTask late({descriptor(0)}, std::chrono::seconds(30));
+    auto worker = dispatcher.reclaimer_;
+    ASSERT_EQ(worker->queryIfIoFinishedInOneWorkerWithTraceIDs({std::to_string(late.traceId())}).front(), State::REJECTED);
+    ASSERT_EQ(worker->forgetTaskInfoOnWorker({std::to_string(late.traceId())}).front(), TransferTaskRegistry::ForgetResult::DONE);
+    auto rejected = dispatcher.executePerRank(std::move(late));
+    EXPECT_EQ(rejected->result().copy_error, CacheCopyError::NOT_EXECUTED);
+    EXPECT_TRUE(engine->contexts.empty());
+    auto original = dispatcher.executePerRank(execution);
+    ASSERT_EQ(engine->contexts.size(), 3u);
+    execution.deadline_ = TransferTask::Clock::now() - std::chrono::seconds(1);
+    auto check_duplicate = [&] {
+        auto duplicate = dispatcher.executePerRank(execution);
+        EXPECT_EQ(duplicate->errorInfo().code(), ErrorCode::INVALID_PARAMS);
+        EXPECT_EQ(duplicate->result().copy_error, CacheCopyError::NOT_EXECUTED);
+        EXPECT_EQ(engine->contexts.size(), 3u);
+    };
+    check_duplicate();
+    engine->contexts[1]->complete(bufferSafeResult());
+    engine->contexts[2]->complete(TransferStatus::DISK_IO_ERROR);
+    ASSERT_TRUE(original->done());
+    EXPECT_FALSE(original->success());
+    engine->proofs[0]->report(true);
+    EXPECT_EQ(dispatcher.reclaimer_->localState(std::to_string(trace)), State::RUNNING);
+    engine->proofs[2]->report(true);
+    check_duplicate();
+    EXPECT_EQ(dispatcher.reclaimer_->localState(std::to_string(trace)), State::BUFFER_SAFE);
+}
 
 }  // namespace
 }  // namespace rtp_llm

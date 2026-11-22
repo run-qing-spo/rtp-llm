@@ -21,23 +21,6 @@ cc_library(
     visibility = ["//visibility:public"],
 )
 
-cc_library(
-    name = "transfer_task_registry",
-    hdrs = [
-        "transfer/TransferTaskRegistry.h",
-    ],
-    copts = copts(),
-    visibility = ["//visibility:public"],
-    deps = ["//rtp_llm/cpp/utils:core_utils"],
-)
-
-cc_library(
-    name = "transfer_buffer_safety",
-    hdrs = ["transfer/TransferBufferSafety.h"],
-    copts = copts(),
-    visibility = ["//visibility:public"],
-)
-
 # Leaf pool target: DeviceBlockPool owns its backing and inherits the common
 # IBlockPool lifecycle. Keeping this target below allocator/group targets avoids
 # a cycle with the full block_tree_cache library.
@@ -131,9 +114,6 @@ cc_library(
         "group_set/SWAGroupSet.cc",
         "transfer/TransferBatchAsyncContext.cc",
         "transfer/CrcCopyExecutor.cc",
-        "transfer/FrozenTask.cc",
-        "transfer/FrozenTaskReclaimer.cc",
-        "transfer/TransferCompletionCleanup.cc",
         "transfer/CrcDumpWriterMetadata.cc",
         "block_pool/DiskBlockPool.cc",
         "block_pool/DiskMountGuard.cc",
@@ -164,10 +144,8 @@ cc_library(
         "TreeNode.h",
         "transfer/TransferAsyncContext.h",
         "transfer/TransferBatchAsyncContext.h",
-        "transfer/FrozenTask.h",
         "transfer/FrozenTaskReclaimer.h",
-        "transfer/TransferCompletionCleanup.h",
-        "transfer/TransferCompletionTypes.h",
+        "transfer/TransferTaskRegistry.h",
         "transfer/TransferStageState.h",
         "transfer/CrcCopyExecutor.h",
         "transfer/DeviceHostCopyGeometry.h",
@@ -186,8 +164,6 @@ cc_library(
     visibility = ["//visibility:public"],
     deps = [
         "//rtp_llm/cpp/cache:pool_metrics",
-        ":transfer_buffer_safety",
-        ":transfer_task_registry",
         ":block_tree_cache_layout",
         "@havenask//aios/autil:common_macros",
         "//rtp_llm/cpp/cache/events:kv_cache_event",
@@ -251,9 +227,6 @@ cc_library(
         "load/LoadTaskRunner.cc",
         "store/BlockTreeStorer.cc",
         "transfer/BlockTransferDispatcher.cc",
-        "transfer/TransferCompletionQuery.cc",
-        "transfer/TransferCompletionForget.cc",
-        "transfer/FrozenTaskRecovery.cc",
         "transfer/MultiRankBlockTransferEngine.cc",
         "transfer/PerRankBlockTransferEngine.cc",
     ],
@@ -272,17 +245,12 @@ cc_library(
         "storage_backend/StorageBackendExecutor.h",
         "store/BlockTreeStorer.h",
         "transfer/BlockTransferDispatcher.h",
-        "transfer/TransferCompletionQuery.h",
-        "transfer/TransferCompletionWire.h",
-        "transfer/TransferCompletionForget.h",
-        "transfer/FrozenTaskRecovery.h",
         "transfer/MultiRankBlockTransferEngine.h",
         "transfer/PerRankBlockTransferEngine.h",
     ],
     copts = copts(),
     visibility = ["//visibility:public"],
     deps = [
-        ":transfer_task_registry",
         ":block_tree_cache_layout",
         ":transfer_common",
         ":transfer_work_loop",

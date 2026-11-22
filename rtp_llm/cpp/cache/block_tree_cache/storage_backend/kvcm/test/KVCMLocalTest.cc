@@ -1,3 +1,4 @@
+#include "rtp_llm/cpp/cache/block_tree_cache/BlockTreeReclaimer.h"
 #include "rtp_llm/cpp/utils/DecodePublicationTest.h"
 #include "rtp_llm/cpp/utils/RemoteCacheConfig.h"
 #include "rtp_llm/cpp/cache/block_tree_cache/storage_backend/kvcm/test/KVCMMockTestBase.h"
@@ -1534,7 +1535,7 @@ TEST(KVCMLocalTest, PrefillUsesExplicitBufferProofForFailureAndTimeoutWithEither
             const bool unknown = !safe;
             EXPECT_FALSE(f.backend->protected_quarantine_);
             EXPECT_EQ(f.environment.device_pool->isFrozen(f.environment.block_id), unknown);
-            EXPECT_EQ(f.backend->frozenTasks().size(), unknown ? 1u : 0u);
+            EXPECT_EQ(f.backend->reclaimer_->frozen_.size(), unknown ? 1u : 0u);
             EXPECT_EQ(f.environment.device_pool->refCount(f.environment.block_id), ref_count_before + (unknown ? 1u : 0u));
             std::lock_guard<std::mutex> lock(f.backend->quarantine_mutex_);
             EXPECT_EQ(
@@ -1731,7 +1732,7 @@ TEST(KVCMLocalTest, PrefillFailedPayloadClosesOnceWithoutFreezingLocalSources) {
             ASSERT_TRUE(waitForBackendOperationsForTest(*f.backend.backend));
             EXPECT_FALSE(f.backend->protected_quarantine_);
             EXPECT_FALSE(f.environment.device_pool->isFrozen(f.environment.block_id));
-            EXPECT_TRUE(f.backend->frozenTasks().empty());
+            EXPECT_TRUE(f.backend->reclaimer_->frozen_.empty());
             EXPECT_EQ(f.environment.device_pool->refCount(f.environment.block_id), ref_count_before);
             });
         }

@@ -525,7 +525,7 @@ TEST_F(KVCMSubmissionBoundaryTest, PrefillReadNormalizesUnclassifiedPostHandoffF
         for (const bool touched : {false, true}) {
             try {
                 try { throw std::bad_alloc(); }
-                catch (...) { s.backend->impl_->rethrowReadPayloadFailure(touched, nullptr); }
+                catch (...) { s.backend->impl_->rethrowReadPayloadFailure(touched, {}); }
             } catch (const StorageOperationCompletionUnknown&) {
                 EXPECT_TRUE(touched);
             } catch (const StorageOperationBufferSafeFailure&) {
