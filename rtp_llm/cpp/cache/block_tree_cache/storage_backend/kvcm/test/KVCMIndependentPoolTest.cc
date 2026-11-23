@@ -211,6 +211,7 @@ protected:
                                                         nullptr,
                                                         wrapper_);
         if (fail_second || rank != 0) {
+            backend_->setReclaimer(std::make_shared<BlockTreeReclaimer>());
             auto topology = config_.topologyPtr();
             auto tags     = config_.groupTags();
             auto pools    = pools_;
@@ -342,7 +343,7 @@ TEST_F(KVCMIndependentPoolTest, PartialWriteFailureLeavesSessionOpenWithoutFreez
         EXPECT_FALSE(pools_[group]->isFrozen(blocks_[group]));
         EXPECT_EQ(pools_[group]->refCount(blocks_[group]), 1u);
     }
-    EXPECT_TRUE(backend_->reclaimer_->frozen_.empty());
+    EXPECT_TRUE(cache_->reclaimer().frozen_.empty());
     backend_->shutdown();
     EXPECT_EQ(state_->destroyed, 3u);
 }

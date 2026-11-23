@@ -332,6 +332,7 @@ protected:
             rt.model_name = "eos_gpu";
             backend       = std::make_unique<MockQuiescentKVCMBackend>(
                 env.cache_config, k, rt, parallel, SpeculativeExecutionConfig{}, nullptr, true, nullptr, client);
+            backend->setReclaimer(std::make_shared<BlockTreeReclaimer>());
             EXPECT_TRUE(initSingleRank(*backend, env));
         }
         ~Scenario() {

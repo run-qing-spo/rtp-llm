@@ -1,3 +1,4 @@
+#include "rtp_llm/cpp/cache/block_tree_cache/BlockTreeReclaimer.h"
 #include "rtp_llm/cpp/cache/block_tree_cache/transfer/BlockTransferDispatcher.h"
 #include "rtp_llm/cpp/cache/block_tree_cache/transfer/legacy/LegacyTransferEngine.h"
 #include <gtest/gtest.h>
@@ -1144,7 +1145,7 @@ TEST_P(PerRankBlockTransferEngineCrcTest, LocalRequestPreservesIndependentBatchR
     ASSERT_NO_FATAL_FAILURE(initialize());
     engine_ = std::make_shared<PerRankBlockTransferEngine>(
         std::vector<GroupSetPtr>{group_}, false, DeviceHostCopyOptions{}, 8, 1, 1, 10000, nullptr, 0, 4, GetParam());
-    BlockTransferDispatcher dispatcher(engine_, nullptr);
+    BlockTransferDispatcher dispatcher(engine_, std::make_shared<BlockTreeReclaimer>());
     const auto              execute_request = [&](Tier from, Tier to) {
         std::vector<TransferDescriptor> descriptors;
         for (size_t item = 0; item < sources_.size(); ++item)

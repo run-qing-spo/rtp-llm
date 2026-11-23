@@ -34,6 +34,7 @@
 #include "rtp_llm/cpp/cache/block_tree_cache/block_pool/HostBlockPool.h"
 #include "rtp_llm/cpp/cache/block_tree_cache/transfer/test/PerRankBlockTransferEngineTestUtils.h"
 #include "rtp_llm/cpp/cache/block_tree_cache/test/BlockTreeCacheTestUtils.h"
+#include "rtp_llm/cpp/cache/block_tree_cache/BlockTreeReclaimer.h"
 #include "rtp_llm/cpp/cache/block_tree_cache/transfer/BlockTransferDispatcher.h"
 #include "rtp_llm/cpp/cache/block_tree_cache/transfer/TransferBatchAsyncContext.h"
 #include "rtp_llm/cpp/config/StaticConfig.h"
@@ -363,7 +364,8 @@ public:
         size_t                            max_descriptors_per_batch = 8,
         bool                              async                     = true) {
         transfer_engine_     = std::make_shared<ScriptedTransferEngine>(tree->groupSets(), false, false, async);
-        transfer_dispatcher_ = std::make_unique<BlockTransferDispatcher>(transfer_engine_, nullptr);
+        transfer_dispatcher_ =
+            std::make_unique<BlockTransferDispatcher>(transfer_engine_, std::make_shared<BlockTreeReclaimer>());
         return std::make_unique<BlockTreeEvictor>(
             tree,
             device_policy,
@@ -448,12 +450,6 @@ public:
     }
 
     bool completeBatch(size_t batch_index, bool success) {
-        return completeBatchResult(batch_index,
-                                   success ? ErrorInfo::OkStatus() :
-                                             ErrorInfo(ErrorCode::EXECUTION_EXCEPTION, "injected failure"));
-    }
-
-    bool completeBatchResult(size_t batch_index, TransferResult result) {
         std::shared_ptr<TransferBatchAsyncContext> context;
         {
             std::lock_guard<std::mutex> lock(mutex_);
@@ -462,7 +458,8 @@ public:
             }
             context = contexts_[batch_index];
         }
-        context->complete(bufferSafeResult(std::move(result)));
+        auto status = success ? ErrorInfo::OkStatus() : ErrorInfo(ErrorCode::EXECUTION_EXCEPTION, "injected failure");
+        context->complete(bufferSafeResult(std::move(status)));
         return true;
     }
 
@@ -519,7 +516,7 @@ TEST(BlockTreeEvictorAsyncTest, PendingTransferDoesNotOccupyBusinessWorker) {
     BlockTreeTaskPool task_pool(/*thread_count=*/1, /*queue_size=*/1, "eviction_async_test");
     ASSERT_TRUE(task_pool.start());
     auto                          deferred_engine = std::make_shared<DeferredEvictionTransferEngine>(groups);
-    BlockTransferDispatcher       dispatcher(deferred_engine);
+    BlockTransferDispatcher       dispatcher(deferred_engine, std::make_shared<BlockTreeReclaimer>());
     BlockTreeCacheMetricsReporter metrics_reporter{nullptr};
     std::mutex                    cache_mutex;
     size_t                        settled_count = 0;
@@ -629,7 +626,8 @@ public:
             return false;
         }
         transfer_engine_     = std::make_shared<DeferredEvictionTransferEngine>(groups_);
-        transfer_dispatcher_ = std::make_unique<BlockTransferDispatcher>(transfer_engine_);
+        transfer_dispatcher_ =
+            std::make_unique<BlockTransferDispatcher>(transfer_engine_, std::make_shared<BlockTreeReclaimer>());
         evictor_             = std::make_unique<BlockTreeEvictor>(
             tree_.get(),
             EvictionPolicy::LRU,
@@ -1563,7 +1561,7 @@ void verifyMixedDetachedBatchSettlement(bool transfer_success) {
     BlockTreeTaskPool task_pool(/*thread_count=*/1, /*queue_size=*/2, "mixed_batch_settlement_" + suffix);
     ASSERT_TRUE(task_pool.start());
     auto                    transfer_engine = std::make_shared<DeferredEvictionTransferEngine>(groups);
-    BlockTransferDispatcher dispatcher(transfer_engine);
+    BlockTransferDispatcher dispatcher(transfer_engine, std::make_shared<BlockTreeReclaimer>());
     auto kmonitor_reporter = std::make_shared<kmonitor::MetricsReporter>("", "", kmonitor::MetricsTags{});
     BlockTreeCacheMetricsReporter      metrics_reporter{kmonitor_reporter};
     std::mutex                         cache_mutex;

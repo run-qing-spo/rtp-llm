@@ -21,6 +21,8 @@
 
 namespace rtp_llm {
 
+class IBlockPool;
+
 enum class TransferOperation : uint8_t {
     LOAD,
     EVICT,
@@ -116,6 +118,12 @@ inline ErrorInfo transferStatusToErrorInfo(TransferStatus status) {
     }
     return ErrorInfo(ErrorCode::UNKNOWN_ERROR, "unknown block transfer status");
 }
+
+struct TransferTargetBlock {
+    std::shared_ptr<IBlockPool> pool;
+    BlockIdxType                block;
+};
+
 struct TransferCompletionKey {
     enum class LegacyWireField { NONE, TRANSFER_TRACE_ID, KVCM_TRACE_ID };
 

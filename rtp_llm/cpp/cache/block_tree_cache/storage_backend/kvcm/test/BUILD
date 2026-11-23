@@ -56,6 +56,7 @@ cc_test_wrapper(
 )
 
 kvcm_backend_test_deps = [
+    "//rtp_llm/cpp/cache/block_tree_cache",
     "//rtp_llm/cpp/cache/block_tree_cache/storage_backend/kvcm:client",
     "//rtp_llm/cpp/cache/block_tree_cache/storage_backend/kvcm:kvcm_storage_backend",
     "//rtp_llm/cpp/cache/block_tree_cache/storage_backend/kvcm:group_policy",
@@ -91,7 +92,6 @@ cc_test_wrapper(
     }),
     deps = kvcm_backend_test_deps + [
         "//rtp_llm/cpp/cache:cache",
-        "//rtp_llm/cpp/cache/block_tree_cache",
         "//rtp_llm/cpp/cache/block_tree_cache/storage_backend/kvcm:sdk_buffer_safety",
         "//rtp_llm/cpp/cache/block_tree_cache/test:completion_rpc_test_server",
         "@grpc//:grpc++",
@@ -117,7 +117,6 @@ cc_test_wrapper(
         "//conditions:default": ["@platforms//:incompatible"],
     }),
     deps = kvcm_backend_test_deps + [
-        "//rtp_llm/cpp/cache/block_tree_cache",
         "//rtp_llm/cpp/cache/block_tree_cache/storage_backend/kvcm:sdk_buffer_safety",
         "//rtp_llm/cpp/cache/block_tree_cache/test:bounded_thread_test_utils",
     ],
@@ -280,7 +279,6 @@ cc_test_wrapper(
     deps = ["//rtp_llm/cpp/utils:decode_publication_test_support",
             "//rtp_llm/cpp/cache:cache",
             "//rtp_llm/cpp/cache/test:block_pool_test_helper",
-            "//rtp_llm/cpp/cache/block_tree_cache",
             "//rtp_llm/cpp/cache/block_tree_cache/test:bounded_thread_test_utils"] + kvcm_backend_test_deps,
 )
 

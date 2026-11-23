@@ -5,6 +5,7 @@
 #include <unordered_set>
 #include <utility>
 
+#include "rtp_llm/cpp/cache/block_tree_cache/block_pool/IBlockPool.h"
 #include "rtp_llm/cpp/cache/block_tree_cache/BlockTree.h"
 #include "rtp_llm/cpp/cache/block_tree_cache/metrics/CacheStageMetrics.h"
 #include "rtp_llm/cpp/cache/block_tree_cache/BlockTreeTaskPool.h"

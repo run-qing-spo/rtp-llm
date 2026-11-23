@@ -198,6 +198,15 @@ public:
             "KVCM payload transfer timed out", StorageQuarantineReason::SDK_TIMEOUT));
     }
 
+    void setReclaimer(std::shared_ptr<BlockTreeReclaimer> reclaimer) {
+        RTP_LLM_CHECK(reclaimer && !reclaimer_);
+        reclaimer->setRecoveryMaintenance([impl = weak_from_this()] {
+            if (auto owner = impl.lock())
+                owner->retryReadRecoveryDiscards();
+        });
+        reclaimer_ = std::move(reclaimer);
+    }
+
     std::optional<ControlConfig> controlConfig() const {
         return control_config_;
     }
@@ -205,6 +214,10 @@ public:
     bool init(const CacheTopology&                                                topology,
               StorageBackend::BufferResolver                                      buffer_resolver,
               const std::function<const DeviceBlockPoolPtr&(const std::string&)>& pool_resolver) {
+        if (!reclaimer_) {
+            RTP_LLM_LOG_ERROR("BlockTree KVCM storage backend requires a reclaimer");
+            return false;
+        }
         RTP_LLM_LOG_INFO("start init BlockTree KVCM storage backend");
         if (kv_cache_config_.kvcm_task_timeout_ms <= 0) {
             RTP_LLM_LOG_ERROR("KVCM task timeout must be positive");
@@ -736,7 +749,7 @@ public:
         const TransferCompletionKey key{trace_id, TransferCompletionKey::LegacyWireField::KVCM_TRACE_ID};
         const auto ranks = broadcast_manager_ ? broadcast_manager_->workerNum() : 1;
         auto targets = decode_publication_enabled_ ? std::vector<TransferTargetBlock>{} : readTargets(requests);
-        RTP_LLM_CHECK(backend_.reclaimer_->registerTask(key, {broadcast_manager_ != nullptr, ranks}, std::move(targets), "kvcm"));
+        RTP_LLM_CHECK(reclaimer_->registerTask(key, {broadcast_manager_ != nullptr, ranks}, std::move(targets), "kvcm"));
         read_trace.swap(trace_id);
         if (done) {
             auto prepare_completion = [&](auto collect) {
@@ -762,7 +775,7 @@ public:
                         }
                         collector.remote_read_token_num = static_cast<int64_t>(tokens);
                         collector.remote_read_fail_qps  = false;
-                        backend_.reclaimer_->unregisterTask(read_trace);
+                        reclaimer_->unregisterTask(read_trace);
                     } catch (...) {
                         rethrowReadPayloadFailure(unknown, read_trace);
                     }
@@ -782,7 +795,7 @@ public:
             static_cast<int64_t>(remote_blocks * topology_->groups().front().cacheKeyTokenStride());
         collector.remote_read_fail_qps = false;
         read_outcome                   = "read_complete";
-        backend_.reclaimer_->unregisterTask(read_trace);
+        reclaimer_->unregisterTask(read_trace);
     }
 
     struct WritePublication {
@@ -835,14 +848,14 @@ public:
             rethrowPayloadFailure(source_may_be_touched);
         } catch (const StorageOperationCompletionUnknown&) {
             if (!read_trace.empty() && !decode_publication_enabled_) {
-                backend_.reclaimer_->freezeTargetBlocksWithTraceIDAndStillIOWorkerID(read_trace, {}, {});
+                reclaimer_->freezeTargetBlocksWithTraceIDAndStillIOWorkerID(read_trace, {}, {});
                 std::rethrow_exception(copyFailureWithTargetProtection(std::current_exception(),
                                                                       StorageTargetProtection::PROTECTED_BY_BACKEND));
             }
-            backend_.reclaimer_->unregisterTask(read_trace);
+            reclaimer_->unregisterTask(read_trace);
             throw;
         } catch (...) {
-            backend_.reclaimer_->unregisterTask(read_trace);
+            reclaimer_->unregisterTask(read_trace);
             throw;
         }
     }
@@ -1364,6 +1377,8 @@ public:
             // supply completion evidence for the already registered execution.
             response.set_payload_buffer_safe(true);
         };
+        if (!reclaimer_)
+            return nullptr;
         if (request.trace_id().empty()) {
             reject("empty_trace");
             return nullptr;
@@ -1373,18 +1388,18 @@ public:
         auto execution = std::make_shared<ReadExecution>();
         execution->trace_id = request.trace_id();
         execution->proof = std::make_shared<TransferBufferSafety>(
-            [registry = backend_.reclaimer_, trace_id = execution->trace_id] { registry->ioFinishedOnWorkerWithTraceID(trace_id); });
+            [registry = reclaimer_, trace_id = execution->trace_id] { registry->ioFinishedOnWorkerWithTraceID(trace_id); });
         if (kvcm::kSupportsReadRecoveryDiscard && kv_cache_config_.block_tree_frozen_recovery_interval_ms > 0 &&
             parallelism_config_.role_type != RoleType::DECODE &&
             std::all_of(request.uris().begin(), request.uris().end(),
                         [](const auto& uri) { return uri.compare(0, 7, "pace://") == 0; })) {
             execution->recovery_cancelled = std::make_shared<std::atomic<bool>>(false);
         }
-        TransferTaskRegistry::QueryCallback query;
+        BlockTreeReclaimer::QueryCallback query;
         const auto id = request.trace_id();
         if (client_wrapper_ && parallelism_config_.role_type != RoleType::DECODE
             && kv_cache_config_.block_tree_frozen_recovery_interval_ms > 0) {
-            query = [client = client_wrapper_, registry = std::weak_ptr<BlockTreeReclaimer>(backend_.reclaimer_),
+            query = [client = client_wrapper_, registry = std::weak_ptr<BlockTreeReclaimer>(reclaimer_),
                      id, timeout = kv_cache_config_.block_tree_frozen_recovery_query_timeout_ms](Clock::time_point deadline) {
                 const auto now = Clock::now();
                 deadline = std::min(deadline, now + std::chrono::milliseconds(timeout));
@@ -1401,7 +1416,7 @@ public:
                     owner->discardReadRecovery(id);
             }
         };
-        if (!backend_.reclaimer_->registerOnWorkerTaskWithTraceID(id, std::move(query), std::move(discard))) {
+        if (!reclaimer_->registerOnWorkerTaskWithTraceID(id, std::move(query), std::move(discard))) {
             reject("duplicate_trace");
             return nullptr;
         }
@@ -2578,7 +2593,7 @@ private:
         if (track_workers) {
             source_may_be_touched = !pending.empty();
             if (!pending.empty())
-                backend_.reclaimer_->freezeTargetBlocksWithTraceIDAndStillIOWorkerID(read_trace, {}, pending);
+                reclaimer_->freezeTargetBlocksWithTraceIDAndStillIOWorkerID(read_trace, {}, pending);
         }
         if (!success) {
             // Preserve a known SDK exception on any acknowledged rank even if
@@ -2717,6 +2732,7 @@ private:
     StorageBackend::BufferResolver file_resolver_;
     std::shared_ptr<PublicationBudget> publication_budget_;
     const KVCMStorageBackend& backend_;
+    std::shared_ptr<BlockTreeReclaimer> reclaimer_;
     CacheConfig                          cache_config_;
     KVCacheConfig                        kv_cache_config_;
     RuntimeConfig                        runtime_config_;
@@ -2767,7 +2783,6 @@ KVCMStorageBackend::KVCMStorageBackend(const CacheConfig&                       
                    std::make_shared<BlockTreeCacheMetricsReporter>(metrics_reporter),
                    parallelism_config.world_rank,
                    std::chrono::milliseconds(kv_cache_config.kvcm_task_timeout_ms)),
-    reclaimer_(std::make_shared<BlockTreeReclaimer>()),
     impl_(std::make_shared<Impl>(*this,
                                  cache_config,
                                  kv_cache_config,
@@ -2905,11 +2920,7 @@ bool KVCMStorageBackend::execute(const RemoteOperationRequestPB& request, Remote
 }
 
 void KVCMStorageBackend::setReclaimer(std::shared_ptr<BlockTreeReclaimer> reclaimer) {
-    reclaimer_ = std::move(reclaimer);
-    reclaimer_->setRecoveryMaintenance([impl = std::weak_ptr<Impl>(impl_)] {
-        if (auto owner = impl.lock())
-            owner->retryReadRecoveryDiscards();
-    });
+    impl_->setReclaimer(std::move(reclaimer));
 }
 
 }  // namespace rtp_llm

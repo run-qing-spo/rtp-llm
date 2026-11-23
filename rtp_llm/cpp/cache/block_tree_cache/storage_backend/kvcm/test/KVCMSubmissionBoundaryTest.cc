@@ -178,6 +178,7 @@ protected:
             runtime.model_name = "boundary_test";
             backend = std::make_unique<MockQuiescentKVCMBackend>(env.cache_config, config, runtime, parallel,
                 SpeculativeExecutionConfig{}, std::move(broadcast), true, nullptr, client);
+            backend->setReclaimer(std::make_shared<BlockTreeReclaimer>());
             EXPECT_TRUE(initSingleRank(*backend, env));
         }
         ~Fixture() { if (backend) { backend->proveMockQuiescence(); backend->shutdown(); } }

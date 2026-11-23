@@ -12,6 +12,7 @@
 #include <cuda_runtime.h>
 #include <torch/torch.h>
 
+#include "rtp_llm/cpp/cache/block_tree_cache/BlockTreeReclaimer.h"
 #include "rtp_llm/cpp/cache/block_tree_cache/transfer/BlockTransferDispatcher.h"
 #include "rtp_llm/cpp/cache/block_tree_cache/transfer/PerRankBlockTransferEngine.h"
 #include "rtp_llm/cpp/cache/block_tree_cache/transfer/test/PerRankBlockTransferEngineTestUtils.h"
@@ -194,7 +195,7 @@ struct TransferFixture {
         engine    = std::make_shared<PerRankBlockTransferEngine>(
             std::vector<GroupSetPtr>{group_set}, true, DeviceHostCopyOptions{}, 128, 8, 4, 10000, nullptr, 0, 4, async);
         EXPECT_EQ(engine->asyncEnabled(), async);
-        dispatcher = std::make_unique<BlockTransferDispatcher>(engine);
+        dispatcher = std::make_unique<BlockTransferDispatcher>(engine, std::make_shared<BlockTreeReclaimer>());
     }
 
     TempDirGuard                                temp_dir;

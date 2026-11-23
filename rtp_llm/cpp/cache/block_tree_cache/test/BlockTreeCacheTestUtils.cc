@@ -513,6 +513,7 @@ std::unique_ptr<BlockTreeCache> makeBlockTreeCacheForTest(std::vector<GroupSetPt
         };
     }
     auto cache_metrics_reporter = std::make_shared<BlockTreeCacheMetricsReporter>(std::move(metrics_reporter));
+    auto reclaimer = std::make_shared<BlockTreeReclaimer>(cache_metrics_reporter);
     const bool async =
         config.btc_transfer_engine_async && std::all_of(group_sets.begin(), group_sets.end(), [](const auto& group) {
             return group->devicePools().empty() || (!group->hostPool() && !group->diskPool()) || group->crcEnabled();
@@ -533,7 +534,7 @@ std::unique_ptr<BlockTreeCache> makeBlockTreeCacheForTest(std::vector<GroupSetPt
         multi_rank_engine = std::make_shared<MultiRankBlockTransferEngine>(group_sets, std::move(broadcast_manager));
     }
     auto transfer_dispatcher =
-        std::make_unique<BlockTransferDispatcher>(std::move(per_rank_engine), std::move(multi_rank_engine));
+        std::make_unique<BlockTransferDispatcher>(std::move(per_rank_engine), reclaimer, std::move(multi_rank_engine));
     auto task_pool =
         std::make_unique<BlockTreeTaskPool>(static_cast<size_t>(config.task_pool_size), 1000, "BlockTreeCacheTaskPool");
     auto tree  = std::make_unique<BlockTree>(std::move(group_sets));
@@ -542,8 +543,10 @@ std::unique_ptr<BlockTreeCache> makeBlockTreeCacheForTest(std::vector<GroupSetPt
                                                   std::move(storage_backend),
                                                   std::move(transfer_dispatcher),
                                                   std::move(task_pool),
-                                                  std::move(cache_metrics_reporter));
+                                                  std::move(cache_metrics_reporter),
+                                                  reclaimer);
     if (cache->storageBackend()) {
+        cache->storageBackend()->setReclaimer(reclaimer);
         RTP_LLM_CHECK_WITH_INFO(cache->storageBackend()->init(std::move(storage_topology),
                                                               std::move(storage_pools),
                                                               std::move(storage_buffer_resolver)),

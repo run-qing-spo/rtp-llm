@@ -143,7 +143,8 @@ public:
                    std::shared_ptr<StorageBackend>                storage_backend,
                    std::unique_ptr<BlockTransferDispatcher>       transfer_dispatcher,
                    std::unique_ptr<BlockTreeTaskPool>             task_pool,
-                   std::shared_ptr<BlockTreeCacheMetricsReporter> metrics_reporter);
+                   std::shared_ptr<BlockTreeCacheMetricsReporter> metrics_reporter,
+                   std::shared_ptr<BlockTreeReclaimer>            reclaimer);
 
     ~BlockTreeCache();
     bool init();
