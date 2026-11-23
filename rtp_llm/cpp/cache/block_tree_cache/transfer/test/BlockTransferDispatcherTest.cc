@@ -691,7 +691,7 @@ TEST(BlockTransferDispatcherTest, DelayedFreezePreservesOriginalBlocksAcrossCall
     EXPECT_TRUE(host->isAllocated(*replacement));
     host->decTreeRef(*replacement, BlockTreeRefType::LOAD);
     reclaimer.drainForget();
-    EXPECT_EQ(reclaimer.size(), 0u);
+    EXPECT_TRUE(reclaimer.records_.empty());
     dispatcher.waitForTransfers();
 }
 
