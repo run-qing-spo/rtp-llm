@@ -110,16 +110,6 @@ namespace rtp_llm {
 namespace {
 using BoundaryClock = std::chrono::steady_clock;
 
-TEST(KVCMPublicationAdmissionTest, DecodeRequiresEnabledCompletedPublicationButPrefillIsUnchanged) {
-    for (const bool enabled : {false, true}) {
-        for (const bool completion : {false, true}) {
-            SCOPED_TRACE(::testing::PrintToString(std::make_pair(enabled, completion)));
-            EXPECT_TRUE(kvcm::allowsPublication(enabled, false, completion));
-            EXPECT_EQ(kvcm::allowsPublication(enabled, true, completion), enabled && completion);
-        }
-    }
-}
-
 class KVCMSubmissionBoundaryTest: public ::testing::Test {
 protected:
     static constexpr auto kSetupWait = std::chrono::seconds(5);
@@ -484,11 +474,11 @@ TEST_F(KVCMSubmissionBoundaryTest, ProjectedOneCompletedPeerAndOnePreflightExpir
 TEST_F(KVCMSubmissionBoundaryTest, TargetProtectionPreservesExceptionalSdkUnknownType) {
     const auto failure = std::make_exception_ptr(StorageOperationPayloadExceptionUnknown(
         "exceptional SDK completion", StorageQuarantineReason::RPC_ERROR));
-    for (const auto protection : {StorageLocalTargetProtection::LEGACY,
-                                  StorageLocalTargetProtection::TARGETS_HELD,
-                                  StorageLocalTargetProtection::NO_LOCAL_TARGETS}) {
+    for (const auto protection : {StorageTargetProtection::FREEZE_REQUEST_BLOCKS,
+                                  StorageTargetProtection::PROTECTED_BY_BACKEND,
+                                  StorageTargetProtection::NO_LOCAL_TARGETS}) {
         try {
-            std::rethrow_exception(KVCMStorageBackend::Impl::withTargetProtection(failure, protection));
+            std::rethrow_exception(KVCMStorageBackend::Impl::copyFailureWithTargetProtection(failure, protection));
         } catch (const StorageOperationPayloadExceptionUnknown& error) {
             EXPECT_STREQ(error.what(), "exceptional SDK completion");
             EXPECT_EQ(error.reason(), StorageQuarantineReason::RPC_ERROR);
@@ -534,7 +524,7 @@ TEST_F(KVCMSubmissionBoundaryTest, PrefillReadNormalizesUnclassifiedPostHandoffF
         for (const bool touched : {false, true}) {
             try {
                 try { throw std::bad_alloc(); }
-                catch (...) { s.backend->impl_->rethrowReadPayloadFailure(touched, nullptr); }
+                catch (...) { s.backend->impl_->rethrowReadPayloadFailure(touched, {}); }
             } catch (const StorageOperationCompletionUnknown&) {
                 EXPECT_TRUE(touched);
             } catch (const StorageOperationBufferSafeFailure&) {

@@ -202,7 +202,7 @@ struct KVCacheConfig {
     // Query/forget timeout is positive; both durations must fit int milliseconds.
     int64_t block_tree_frozen_recovery_interval_ms       = 1000;
     int64_t block_tree_frozen_recovery_query_timeout_ms  = 1000;
-    int64_t block_tree_frozen_force_release_timeout_ms   = 60000;
+    int64_t block_tree_frozen_force_release_timeout_ms   = 300000;
     double  block_pool_frozen_abort_lower_ratio          = kDefaultBlockPoolFrozenAbortLowerRatio;
     double  block_pool_frozen_abort_upper_ratio          = kDefaultBlockPoolFrozenAbortUpperRatio;
     double  block_tree_device_evict_low_watermark_ratio  = kDefaultDeviceLowWatermarkRatio;
@@ -301,6 +301,9 @@ struct KVCacheConfig {
     int         kvcm_get_broadcast_timeout = 15000;
     int         kvcm_put_broadcast_timeout = 15000;
     std::string kvcm_client_config         = "";
+    bool        validFrozenRecoveryTiming() const;
+    static bool
+    validFrozenRecoveryTiming(int64_t interval_ms, int64_t query_timeout_ms, int64_t force_release_timeout_ms);
     void        insertMultiTaskPromptTokens(std::string task_id, std::vector<int64_t> tokens_id);
     std::string to_string() const;
 };

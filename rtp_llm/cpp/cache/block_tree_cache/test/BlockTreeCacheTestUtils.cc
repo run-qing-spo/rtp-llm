@@ -24,6 +24,8 @@
 
 namespace rtp_llm::block_tree_cache_test {
 
+using block_transfer_engine_test::bufferSafeResult;
+
 void CallbackBarrier::enterAndWait() {
     std::unique_lock<std::mutex> lock(mutex_);
     ++entered_count_;
@@ -84,11 +86,12 @@ std::shared_ptr<TransferAsyncContext> ControlledPerRankBlockTransferEngine::exec
         barrier_->enterAndWait();
     }
     if (action_ == TransferCopyAction::Throw) {
+        task.completionProof()->report(true);
         throw std::runtime_error("injected copy failure");
     }
     if (action_ == TransferCopyAction::Fail) {
         return std::make_shared<CompletedTransferAsyncContext>(
-            ErrorInfo(ErrorCode::EXECUTION_EXCEPTION, "injected copy failure"));
+            bufferSafeResult(ErrorInfo(ErrorCode::EXECUTION_EXCEPTION, "injected copy failure")));
     }
     return PerRankBlockTransferEngine::executeBatch(std::move(task));
 }
@@ -805,10 +808,10 @@ std::shared_ptr<TransferAsyncContext> ScriptedPerRankBlockTransferEngine::execut
         return PerRankBlockTransferEngine::executeBatch(std::move(task));
     }
     if (success) {
-        return std::make_shared<CompletedTransferAsyncContext>(ErrorInfo::OkStatus());
+        return std::make_shared<CompletedTransferAsyncContext>(bufferSafeResult());
     }
     return std::make_shared<CompletedTransferAsyncContext>(
-        ErrorInfo(ErrorCode::EXECUTION_EXCEPTION, "scripted transfer failure"));
+        bufferSafeResult(ErrorInfo(ErrorCode::EXECUTION_EXCEPTION, "scripted transfer failure")));
 }
 
 void ScriptedPerRankBlockTransferEngine::enqueue(bool success) {

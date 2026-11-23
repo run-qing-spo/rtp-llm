@@ -15,8 +15,5 @@ inline FailedPublicationAction failedPublicationAction(bool payload_may_have_sta
     return FailedPublicationAction::ABORT_UNCOMMITTED;
 }
 
-inline bool allowsPublication(bool decode_enabled, bool decode_role, bool decode_completion) noexcept {
-    return !decode_role || (decode_enabled && decode_completion);
-}
 
 }  // namespace rtp_llm::kvcm

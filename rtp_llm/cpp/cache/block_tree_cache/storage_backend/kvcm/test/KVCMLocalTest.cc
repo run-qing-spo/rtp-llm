@@ -1,3 +1,4 @@
+#include "rtp_llm/cpp/cache/block_tree_cache/BlockTreeReclaimer.h"
 #include "rtp_llm/cpp/utils/DecodePublicationTest.h"
 #include "rtp_llm/cpp/utils/RemoteCacheConfig.h"
 #include "rtp_llm/cpp/cache/block_tree_cache/storage_backend/kvcm/test/KVCMMockTestBase.h"
@@ -442,7 +443,7 @@ TEST(KVCMLocalTest, DirectClientRoutesMetadataAndPayload) {
     EXPECT_EQ(*destruction_count, 1);
 }
 
-TEST(KVCMLocalTest, DecodeOffSkipsRemoteWritesBeforePinningButKeepsLocalTreeAndRemoteReads) {
+TEST(KVCMLocalTest, DecodeOffAllowsRemoteWritesAndReads) {
     autil::EnvGuard feature("RTP_LLM_REMOTE_CACHE_ENABLE_DECODE_PUBLISH", "0");
     for (const auto role : {RoleType::PREFILL, RoleType::DECODE}) {
         SCOPED_TRACE(static_cast<int>(role));
@@ -458,11 +459,11 @@ TEST(KVCMLocalTest, DecodeOffSkipsRemoteWritesBeforePinningButKeepsLocalTreeAndR
             allocation.block_mask = kv_cache_manager::BlockMaskOffset{0};
             allocation.locations = {{{"tp0_Fdefault", "write_uri"}}};
             EXPECT_CALL(*client, getWriteLocation(_, _, _, _, _, _, _))
-                .Times(decode ? 0 : 1).WillRepeatedly(Return(std::make_pair(true, allocation)));
+                .Times(1).WillRepeatedly(Return(std::make_pair(true, allocation)));
             EXPECT_CALL(*client, saveKvCachesForTag(_, _, _, _))
-                .Times(decode ? 0 : 1)
+                .Times(1)
                 .WillRepeatedly(Return(std::make_pair(true, kv_cache_manager::UriStrVec{"write_uri"})));
-            EXPECT_CALL(*client, finishWrite(_, _, _, _, _)).Times(decode ? 0 : 1)
+            EXPECT_CALL(*client, finishWrite(_, _, _, _, _)).Times(1)
                 .WillRepeatedly(Invoke([](const auto&, const auto&, const auto&, const auto& mask, const auto&) {
                     const auto* offset = std::get_if<kv_cache_manager::BlockMaskOffset>(&mask);
                     EXPECT_NE(offset, nullptr);
@@ -489,7 +490,7 @@ TEST(KVCMLocalTest, DecodeOffSkipsRemoteWritesBeforePinningButKeepsLocalTreeAndR
                 for (const bool completion : {false, true}) {
                     auto request = makeStorageRequest(environment);
                     request.decode_completion = completion;
-                    EXPECT_FALSE(remote.prepareWrite(std::move(request)));
+                    EXPECT_TRUE(remote.prepareWrite(std::move(request)));
                     EXPECT_EQ(environment.device_pool->refCount(environment.block_id), original_refs);
                 }
             }
@@ -1623,7 +1624,7 @@ TEST(KVCMLocalTest, PrefillUsesExplicitBufferProofForFailureAndTimeoutWithEither
             const bool unknown = !safe;
             EXPECT_FALSE(f.backend->protected_quarantine_);
             EXPECT_EQ(f.environment.device_pool->isFrozen(f.environment.block_id), unknown);
-            EXPECT_EQ(f.backend->frozenTasks().size(), unknown ? 1u : 0u);
+            EXPECT_EQ(f.backend->reclaimer_->frozen_.size(), unknown ? 1u : 0u);
             EXPECT_EQ(f.environment.device_pool->refCount(f.environment.block_id), ref_count_before + (unknown ? 1u : 0u));
             std::lock_guard<std::mutex> lock(f.backend->quarantine_mutex_);
             EXPECT_EQ(
@@ -1817,7 +1818,7 @@ TEST(KVCMLocalTest, PrefillFailedWriteClosesOnlyWithBufferSafeProof) {
             ASSERT_TRUE(waitForBackendOperationsForTest(*f.backend.backend));
             EXPECT_FALSE(f.backend->protected_quarantine_);
             EXPECT_FALSE(f.environment.device_pool->isFrozen(f.environment.block_id));
-            EXPECT_TRUE(f.backend->frozenTasks().empty());
+            EXPECT_TRUE(f.backend->reclaimer_->frozen_.empty());
             EXPECT_EQ(f.environment.device_pool->refCount(f.environment.block_id), ref_count_before);
             });
         }

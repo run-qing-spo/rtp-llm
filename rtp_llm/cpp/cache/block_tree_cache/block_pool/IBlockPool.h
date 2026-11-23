@@ -68,6 +68,7 @@ public:
     void setCapacityChangeCallback(std::function<void()> callback);
 
     const std::string&  poolName() const;
+    BlockPoolType poolType() const { return config_->pool_type; }
     virtual std::string debugString() const;
     virtual size_t      blockSizeBytes() const = 0;
 
@@ -85,8 +86,7 @@ public:
     bool canReclaimCacheBlock(BlockIdxType block) const;
 
     // Add one FROZEN reference; the caller decides when to release its hold.
-    // abort_context is borrowed for this call and printed only on threshold abort.
-    void freezeBlock(BlockIdxType block, const char* abort_context = nullptr) noexcept;
+    void freezeBlock(BlockIdxType block) noexcept;
     bool isFrozen(BlockIdxType block) const;
 
     // Prepare, but do not acquire or release, one FROZEN reference per block.
@@ -190,7 +190,8 @@ private:
     bool          validBlockNoLock(BlockIdxType block) const;
     void          checkUniqueBlocksNoLock(const BlockIdList& blocks) const;
     static size_t treeRefTypeIndex(BlockTreeRefType ref_type);
-    void          incTreeRefNoLock(BlockIdxType block, size_t ref_type_index, const char* abort_context = nullptr);
+    void          incTreeRefNoLock(BlockIdxType block, size_t ref_type_index);
+    void          decTreeRefNoLock(BlockIdxType block, size_t ref_type_index);
     void          releaseFrozenReferences(const BlockIdList& blocks, const std::function<void()>& notify) noexcept;
 
     size_t       totalBlocksNumNoLock() const;

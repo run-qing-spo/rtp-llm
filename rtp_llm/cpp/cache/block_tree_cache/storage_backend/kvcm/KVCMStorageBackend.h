@@ -8,8 +8,6 @@
 
 #include "rtp_llm/cpp/cache/CacheConfig.h"
 #include "rtp_llm/cpp/cache/block_tree_cache/storage_backend/StorageBackend.h"
-#include "rtp_llm/cpp/cache/block_tree_cache/transfer/TransferTaskRegistry.h"
-#include "rtp_llm/cpp/cache/block_tree_cache/transfer/FrozenTask.h"
 #include "rtp_llm/cpp/config/ConfigModules.h"
 
 class RemoteOperationRequestPB;
@@ -22,7 +20,6 @@ class MetricsReporter;
 namespace rtp_llm {
 
 class BroadcastManager;
-class TransferCompletionCleanup;
 namespace kvcm {
 class ClientWrapper;
 }
@@ -43,7 +40,6 @@ public:
                        std::shared_ptr<kvcm::ClientWrapper>       client_wrapper   = nullptr);
     ~KVCMStorageBackend() override;
     BlockTreeQueueSizes queueSizes() const override;
-    StorageWriteTask prepareWrite(StorageRequest request) override;
 
     struct ControlConfig {
         std::string              instance_group;
@@ -60,27 +56,15 @@ public:
     // Returns whether the request was handled and response is valid. Transfer
     // success, failure, and timeout are carried by response.transfer_status().
     bool execute(const RemoteOperationRequestPB& request, RemoteOperationResponsePB& response);
-    // Local READ completion evidence; this accessor does not issue a query RPC.
-    const TransferTaskRegistry& taskRegistry() const;
-    void cleanupExpiredMissing();
-
-    // Recovery query atomically prevents a previously unseen READ from starting.
-    TransferTaskRegistry::State queryReadCompletion(
-        const std::string& trace_id,
-        std::chrono::steady_clock::time_point completion_deadline = std::chrono::steady_clock::time_point::max()) const;
-    // Forgets completed READ evidence and drops SDK recovery for RUNNING READs.
-    TransferTaskRegistry::ForgetResult forgetReadCompletion(const std::string& trace_id, bool released = false);
-    // Configure before serving READ requests; cleanup does not own their buffers.
-    void setCompletionCleanup(std::shared_ptr<TransferCompletionCleanup> cleanup);
-    // Retained non-protected READ targets; enumeration removes only RELEASED
-    // records. It never queries completion or releases frozen references.
-    std::vector<std::shared_ptr<FrozenTask>> frozenTasks() const;
+    bool executeRemoteRequest(const RemoteOperationRequestPB& request, FunctionResponsePB& response) override;
+    void setReclaimer(std::shared_ptr<BlockTreeReclaimer> reclaimer) override;
 
     // Optional EOS publication; true means handled/skipped, not committed.
     bool
     captureCompletedDecode(const BatchKVCacheResource& resource, size_t computed_end, bool finished = true) override;
 
 protected:
+    bool quarantineUnknownWrite() const noexcept override { return false; }
     bool               initImpl() override;
     StorageMatchResult matchImpl(const StorageRequest& request) override;
     void readImpl(const StorageRequest& request, const std::shared_ptr<StorageBackendMatchMeta>& match_meta) override;
@@ -100,7 +84,8 @@ protected:
 
 private:
     class Impl;
-    std::unique_ptr<Impl> impl_;
+    std::shared_ptr<BlockTreeReclaimer> reclaimer_;
+    std::shared_ptr<Impl> impl_;
 };
 
 }  // namespace rtp_llm

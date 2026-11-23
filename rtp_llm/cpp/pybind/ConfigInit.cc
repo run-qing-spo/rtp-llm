@@ -894,12 +894,7 @@ PYBIND11_MODULE(libth_transformer_config, m) {
                 if (t.size() >= 97) {
                     c.kvcm_model_checkpoint_path = t[96].cast<std::string>();
                 }
-                if (c.block_tree_frozen_recovery_interval_ms < 0
-                    || c.block_tree_frozen_recovery_interval_ms > std::numeric_limits<int>::max()
-                    || c.block_tree_frozen_recovery_query_timeout_ms <= 0
-                    || c.block_tree_frozen_recovery_query_timeout_ms > std::numeric_limits<int>::max()
-                    || c.block_tree_frozen_force_release_timeout_ms < 0
-                    || c.block_tree_frozen_force_release_timeout_ms > std::numeric_limits<int>::max()) {
+                if (!c.validFrozenRecoveryTiming()) {
                     throw std::runtime_error("invalid KVCacheConfig frozen recovery timing: expected interval in "
                                              "[0, INT_MAX], query timeout in [1, INT_MAX] and force release timeout "
                                              "in [0, INT_MAX]");

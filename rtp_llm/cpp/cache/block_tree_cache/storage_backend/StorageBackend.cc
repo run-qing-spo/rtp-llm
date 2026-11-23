@@ -41,17 +41,14 @@ bool invokeCallback(const StorageBackend* backend, Callback&& callback) noexcept
 }
 
 struct StorageTaskState {
-    struct Pin {
+    struct HeldBlock {
         DeviceBlockPoolPtr pool;
         BlockIdxType       block;
     };
 
     StorageRequest   request;
     uint64_t                          trace_id{0};
-    std::vector<Pin> pins;
-    // Parallel to pins for writes and protected reads; one task sidecar, never a per-pin field.
-    // Inline optional container: ordinary reads allocate no token storage;
-    // writes avoid a separate heap allocation for the vector object itself.
+    std::vector<HeldBlock> held_blocks;
     std::optional<std::vector<RemotePublicationPin>> publication_pins;
     // Backend-owned unresolved-I/O token. Backend shutdown keeps its original
     // transport owner alive until the token and protected tasks are discharged.
@@ -66,11 +63,11 @@ struct StorageTaskState {
             if (publication_pins) {
                 publication_pins->clear();
             } else {
-                for (Pin& pin : pins)
-                    pin.pool->decRef(pin.block, DeviceBlockRefType::REMOTE_CONNECTOR);
+                for (HeldBlock& held_block : held_blocks)
+                    held_block.pool->decRef(held_block.block, DeviceBlockRefType::REMOTE_CONNECTOR);
             }
-            pins.clear();
-            request.source_owner.reset(); // Endpoint connector pins also retire after native freeze/completion.
+            held_blocks.clear();
+            request.source_owner.reset();
             request.completion_admission.reset();
             completion_resources.reset();
         });
@@ -340,8 +337,6 @@ void StorageBackend::shutdown() {
         lifecycle_ = Lifecycle::STOPPING;
         executor   = executor_;
     }
-    // RPCs may outlive their submitting worker. Keep the completion queue open
-    // until the last operation has released its pins or recorded quarantine.
     executor->stopAdmission();
     {
         std::unique_lock<std::mutex> lock(lifecycle_mutex_);
@@ -386,11 +381,11 @@ void StorageBackend::quarantineTask(
     const std::shared_ptr<storage_backend_detail::StorageTaskState>& state,
     bool                                                             is_write,
     StorageQuarantineReason                                          reason,
-    StorageLocalTargetProtection                                     local_target_protection) {
+    StorageTargetProtection                                          local_target_protection) {
     if (!state) {
         return;
     }
-    const size_t pinned_block_count = state->pins.size();
+    const size_t held_block_count = state->held_blocks.size();
     if (state->completion_protected) {
         // Anchor before any log, observer, allocation or cleanup. This link
         // only copies/moves already-existing shared ownership and is acyclic.
@@ -402,9 +397,9 @@ void StorageBackend::quarantineTask(
         protected_quarantine_ = state;
         state->quarantined = true;
     } else {
-        if (local_target_protection == StorageLocalTargetProtection::LEGACY) {
-            for (const auto& pin : state->pins) {
-                pin.pool->freezeBlock(pin.block);
+        if (local_target_protection == StorageTargetProtection::FREEZE_REQUEST_BLOCKS) {
+            for (const auto& held_block : state->held_blocks) {
+                held_block.pool->freezeBlock(held_block.block);
             }
         }
         state->finish();
@@ -415,13 +410,13 @@ void StorageBackend::quarantineTask(
     StorageQuarantineBreakdown breakdown;
     {
         std::lock_guard<std::mutex> lock(quarantine_mutex_);
-        quarantined_block_count_ += pinned_block_count;
+        quarantined_block_count_ += held_block_count;
         task_count  = ++quarantined_task_count_;
         block_count = quarantined_block_count_;
         generation  = ++quarantine_generation_;
         auto& counts = quarantined_breakdown_[is_write ? 1 : 0][static_cast<size_t>(reason)];
         ++counts.task_count;
-        counts.block_count += pinned_block_count;
+        counts.block_count += held_block_count;
         breakdown = quarantined_breakdown_;
     }
     RTP_LLM_LOG_WARNING("quarantine storage request after transfer completion became unknown: tasks=%zu blocks=%zu",
@@ -429,7 +424,7 @@ void StorageBackend::quarantineTask(
                         block_count);
     // Count each operation even if its state snapshot is superseded, and before
     // onQuarantineChanged may abort due to the configured capacity limit.
-    onQuarantined(is_write, reason, pinned_block_count);
+    onQuarantined(is_write, reason, held_block_count);
     onQuarantineChanged(generation, task_count, block_count, breakdown);
 }
 
@@ -454,10 +449,8 @@ StorageBackend::prepare(StorageRequest request, bool for_write, uint64_t trace_i
                                 "protected storage I/O requires a backend unresolved-I/O token");
     }
     if (for_write || state->completion_protected) {
-        // All metadata allocation and deduplication precedes pin acquisition.
-        // In particular, recording an acquired pin cannot allocate or lose it.
         std::unordered_set<BlockKey, BlockKeyHash> seen;
-        std::vector<storage_backend_detail::StorageTaskState::Pin> sources;
+        std::vector<storage_backend_detail::StorageTaskState::HeldBlock> sources;
         for (size_t key = 0; key < state->request.handles.size(); ++key) {
             const auto& row = state->request.handles[key];
             for (const auto& handle : row) {
@@ -477,10 +470,10 @@ StorageBackend::prepare(StorageRequest request, bool for_write, uint64_t trace_i
         }
         state->publication_pins.emplace();
         state->publication_pins->reserve(sources.size());
-        state->pins.reserve(sources.size());
-        for (auto& pin : sources) {
-            state->publication_pins->push_back(pin.pool->pinForRemotePublication(pin.block));
-            state->pins.push_back(std::move(pin));
+        state->held_blocks.reserve(sources.size());
+        for (auto& held_block : sources) {
+            state->publication_pins->push_back(held_block.pool->pinForRemotePublication(held_block.block));
+            state->held_blocks.push_back(std::move(held_block));
         }
         timer.finish(true);
         return state;
@@ -493,7 +486,7 @@ StorageBackend::prepare(StorageRequest request, bool for_write, uint64_t trace_i
             const BlockKey key{pool.get(), handle.block};
             if (pinned.insert(key).second) {
                 pool->incRef(handle.block, DeviceBlockRefType::REMOTE_CONNECTOR);
-                state->pins.push_back({pool, handle.block});
+                state->held_blocks.push_back({pool, handle.block});
             }
         }
     }
@@ -648,7 +641,7 @@ void StorageBackend::read(StorageRequest request, std::shared_ptr<StorageBackend
                 block_tree_cache_detail::ScopeRollback retire(std::move(finished));
                 storage_backend_detail::invokeCallback(this, [&] {
                     std::optional<StorageQuarantineReason> quarantine_reason;
-                    auto local_target_protection = StorageLocalTargetProtection::LEGACY;
+                    auto local_target_protection = StorageTargetProtection::FREEZE_REQUEST_BLOCKS;
                     if (error.ok()) {
                         try {
                             std::optional<TransferStageTimer> complete;
@@ -782,8 +775,9 @@ bool StorageBackend::write(StorageWriteTask task) {
             storage_backend_detail::invokeCallback(this, [&] {
                 bool success = false;
                 std::optional<StorageQuarantineReason> quarantine_reason;
-                auto local_target_protection = StorageLocalTargetProtection::LEGACY;
+                auto local_target_protection = StorageTargetProtection::FREEZE_REQUEST_BLOCKS;
                 if (run) {
+                    const bool can_quarantine = !before_io && quarantineUnknownWrite();
                     try {
                         std::optional<TransferStageTimer> complete;
                         if (io_kind == AsyncProfileKind::Lifecycle)
@@ -795,14 +789,14 @@ bool StorageBackend::write(StorageWriteTask task) {
                             result(on_worker);
                         success = !state->request.transfer_task->expired();
                     } catch (const StorageOperationTimeout& error) {
-                        if (!before_io) {
+                        if (can_quarantine) {
                             quarantine_reason       = error.reason();
                             local_target_protection = error.localTargetProtection();
                             quarantineTask(state, /*is_write=*/true, *quarantine_reason, local_target_protection);
                         }
                         RTP_LLM_LOG_WARNING("StorageBackend write timed out: %s", error.what());
                     } catch (const StorageOperationCompletionUnknown& error) {
-                        if (!before_io) {
+                        if (can_quarantine) {
                             quarantine_reason       = error.reason();
                             local_target_protection = error.localTargetProtection();
                             quarantineTask(state, /*is_write=*/true, *quarantine_reason, local_target_protection);
@@ -811,13 +805,13 @@ bool StorageBackend::write(StorageWriteTask task) {
                     } catch (const StorageOperationBufferSafeFailure& error) {
                         RTP_LLM_LOG_WARNING("StorageBackend payload-safe write failure: %s", error.what());
                     } catch (const std::exception& error) {
-                        if (!before_io && (state->completion_protected || state->request.decode_completion)) {
+                        if (can_quarantine && (state->completion_protected || state->request.decode_completion)) {
                             quarantine_reason = StorageQuarantineReason::INVALID_RESPONSE;
                             quarantineTask(state, /*is_write=*/true, *quarantine_reason);
                         }
                         RTP_LLM_LOG_ERROR("StorageBackend write failed: %s", error.what());
                     } catch (...) {
-                        if (!before_io && (state->completion_protected || state->request.decode_completion)) {
+                        if (can_quarantine && (state->completion_protected || state->request.decode_completion)) {
                             quarantine_reason = StorageQuarantineReason::INVALID_RESPONSE;
                             quarantineTask(state, /*is_write=*/true, *quarantine_reason);
                         }
@@ -870,15 +864,14 @@ bool StorageBackend::write(StorageWriteTask task) {
                                 required.insert({pool.get(), block});
                     }
                 }
-                // pins and publication_pins are parallel and unique per (pool, block).
-                auto& pins        = state->pins;
+                auto& held_blocks        = state->held_blocks;
                 auto* publication = state->publication_pins ? &*state->publication_pins : nullptr;
-                RTP_LLM_CHECK(!publication || publication->size() == pins.size());
+                RTP_LLM_CHECK(!publication || publication->size() == held_blocks.size());
                 size_t kept = 0;
-                for (size_t i = 0; i < pins.size(); ++i) {
-                    if (required.count({pins[i].pool.get(), pins[i].block})) {
+                for (size_t i = 0; i < held_blocks.size(); ++i) {
+                    if (required.count({held_blocks[i].pool.get(), held_blocks[i].block})) {
                         if (kept != i) {
-                            pins[kept] = std::move(pins[i]);
+                            held_blocks[kept] = std::move(held_blocks[i]);
                             if (publication)
                                 (*publication)[kept] = std::move((*publication)[i]);
                         }
@@ -886,10 +879,10 @@ bool StorageBackend::write(StorageWriteTask task) {
                     } else if (publication) {
                         (*publication)[i] = {};
                     } else {
-                        pins[i].pool->decRef(pins[i].block, DeviceBlockRefType::REMOTE_CONNECTOR);
+                        held_blocks[i].pool->decRef(held_blocks[i].block, DeviceBlockRefType::REMOTE_CONNECTOR);
                     }
                 }
-                pins.erase(pins.begin() + kept, pins.end());
+                held_blocks.erase(held_blocks.begin() + kept, held_blocks.end());
                 if (publication)
                     publication->erase(publication->begin() + kept, publication->end());
             };

@@ -25,8 +25,12 @@
 #include "rtp_llm/cpp/cache/block_tree_cache/transfer/TransferTypes.h"
 #include "rtp_llm/cpp/utils/ErrorCode.h"
 
+class RemoteOperationRequestPB;
+class FunctionResponsePB;
+
 namespace rtp_llm {
 
+class BlockTreeReclaimer;
 class BatchKVCacheResource;
 class BlockTreeCacheMetricsReporter;
 enum class AsyncProfileKind;
@@ -59,10 +63,10 @@ using StorageQuarantineBreakdown = std::array<std::array<StorageQuarantineCounts
 
 // Describes who protects local targets after UNKNOWN, not whether I/O is safe.
 // Protected completion ownership always takes precedence over this marker.
-enum class StorageLocalTargetProtection {
-    LEGACY,            // StorageBackend retains its existing freeze behavior.
-    TARGETS_HELD,      // The backend already owns protection for every local target.
-    NO_LOCAL_TARGETS,  // The operation only reads local sources.
+enum class StorageTargetProtection {
+    FREEZE_REQUEST_BLOCKS,
+    PROTECTED_BY_BACKEND,
+    NO_LOCAL_TARGETS,
 };
 
 // The backend accepted an operation but cannot prove that DMA/RDMA has
@@ -73,20 +77,20 @@ public:
     StorageOperationCompletionUnknown(
         const std::string& message,
         StorageQuarantineReason reason,
-        StorageLocalTargetProtection local_target_protection = StorageLocalTargetProtection::LEGACY):
+        StorageTargetProtection local_target_protection = StorageTargetProtection::FREEZE_REQUEST_BLOCKS):
         std::runtime_error(message), reason_(reason), local_target_protection_(local_target_protection) {}
 
     StorageQuarantineReason reason() const noexcept {
         return reason_;
     }
 
-    StorageLocalTargetProtection localTargetProtection() const noexcept {
+    StorageTargetProtection localTargetProtection() const noexcept {
         return local_target_protection_;
     }
 
 private:
-    StorageQuarantineReason      reason_;
-    StorageLocalTargetProtection local_target_protection_;
+    StorageQuarantineReason reason_;
+    StorageTargetProtection local_target_protection_;
 };
 
 // An exceptional SDK exit after possible submission, distinct from an
@@ -171,6 +175,11 @@ private:
 // before derived backend state starts destruction.
 class StorageBackend {
 public:
+    virtual bool executeRemoteRequest(const RemoteOperationRequestPB&, FunctionResponsePB&) {
+        return false;
+    }
+    virtual void setReclaimer(std::shared_ptr<BlockTreeReclaimer>) {}
+
     class ExternalIoGuard {
     public:
         ExternalIoGuard() = default;
@@ -274,6 +283,7 @@ protected:
     virtual void               onQuarantined(bool, StorageQuarantineReason, size_t) noexcept {}
     virtual void               onQuarantineChanged(uint64_t, size_t, size_t,
                                                    const StorageQuarantineBreakdown&) noexcept {}
+    virtual bool quarantineUnknownWrite() const noexcept { return true; }
     virtual bool protectUnknownCompletion() const noexcept { return false; }
     virtual std::shared_ptr<void> completionResourceOwner() const { return {}; }
     virtual bool hasUnresolvedExternalIo() const noexcept { return false; }
@@ -318,7 +328,7 @@ private:
     void quarantineTask(const std::shared_ptr<storage_backend_detail::StorageTaskState>& state,
                         bool                                                             is_write,
                         StorageQuarantineReason                                          reason,
-                        StorageLocalTargetProtection local_target_protection = StorageLocalTargetProtection::LEGACY);
+                        StorageTargetProtection local_target_protection = StorageTargetProtection::FREEZE_REQUEST_BLOCKS);
     std::shared_ptr<const CacheTopology> topology_;
     std::atomic<bool>                    remote_cache_enabled_{true};
     PoolsByTag                           pools_by_tag_;

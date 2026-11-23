@@ -50,8 +50,8 @@
 #include "rtp_llm/cpp/cache/block_tree_cache/storage_backend/kvcm/PublicationSettlement.h"
 #include "rtp_llm/cpp/cache/block_tree_cache/storage_backend/kvcm/GroupPolicy.h"
 #include "rtp_llm/cpp/cache/block_tree_cache/storage_backend/kvcm/WorkerPayloadProof.h"
-#include "rtp_llm/cpp/cache/block_tree_cache/transfer/TransferBufferSafety.h"
-#include "rtp_llm/cpp/cache/block_tree_cache/transfer/TransferCompletionCleanup.h"
+#include "rtp_llm/cpp/cache/block_tree_cache/BlockTreeReclaimer.h"
+#include <numeric>
 #include "rtp_llm/cpp/metrics/RtpLLMMetrics.h"
 #include "rtp_llm/cpp/model_rpc/BroadcastManager.h"
 #include "rtp_llm/cpp/model_rpc/proto/model_rpc_service.grpc.pb.h"
@@ -112,13 +112,13 @@ void appendHostCacheMatch(const Match& host, RemoteHostCacheMatchPB& output) {
 
 }  // namespace
 
-class KVCMStorageBackend::Impl {
+class KVCMStorageBackend::Impl: public std::enable_shared_from_this<KVCMStorageBackend::Impl> {
 public:
     using ActualUriGather = std::vector<std::vector<kv_cache_manager::LocationSpecUnit*>>;
     using PayloadResult = BroadcastResult<FunctionRequestPB, FunctionResponsePB>;
 
-    static std::exception_ptr withTargetProtection(const std::exception_ptr& failure,
-                                                   StorageLocalTargetProtection protection) noexcept {
+    static std::exception_ptr copyFailureWithTargetProtection(const std::exception_ptr& failure,
+                                                              StorageTargetProtection protection) noexcept {
         // Throw/catch the requested subtype directly: allocation failure must
         // not be substituted for the UNKNOWN whose targets still need custody.
         try {
@@ -139,196 +139,16 @@ public:
         std::terminate();
     }
 
-    struct CoordinatedRead {
-        CoordinatedRead(Impl* owner, FrozenTask::ExecutionInfo execution,
-                        TransferCompletionCleanup::Prepared cleanup):
-            owner(owner), execution(std::move(execution)), diagnostics(std::make_shared<TransferExecutionDiagnostics>()),
-            cleanup(std::move(cleanup)) {
-            prepared_slot.emplace_back();
-            diagnostics->trace_id = this->execution.trace_id;
-            for (const auto& peer : this->execution.expected_peers) {
-                TransferRankSnapshot rank;
-                rank.rank = peer.rank;
-                rank.server_address = peer.address;
-                rank.remote = this->execution.remote;
-                diagnostics->ranks.push_back(std::move(rank));
+    std::vector<TransferTargetBlock> readTargets(const std::vector<FunctionRequestPB>& requests) const {
+        std::vector<TransferTargetBlock> targets;
+        for (const auto& request : requests) {
+            const auto& remote = request.remote_request();
+            RTP_LLM_CHECK(remote.group_tags_size() == remote.block_ids_size());
+            for (int index = 0; index < remote.block_ids_size(); ++index) {
+                targets.push_back({pools_by_tag_.at(remote.group_tags(index)), remote.block_ids(index)});
             }
         }
-
-        void finalizeForForget() noexcept {
-            TransferCompletionCleanup::Prepared ready;
-            {
-                std::lock_guard<std::mutex> lock(mutex);
-                if (marked_failure) {
-                    return;
-                }
-                ready = std::move(cleanup);
-            }
-            ready.submit();
-        }
-
-        static void observeResponse(TransferRankSnapshot& rank, const RemoteOperationResponsePB& response) noexcept {
-            rank.response_received = true;
-            rank.worker_transfer_status = static_cast<int>(response.transfer_status());
-            rank.response_valid = response.transfer_status() == REMOTE_TRANSFER_STATUS_SUCCESS
-                                  || response.transfer_status() == REMOTE_TRANSFER_STATUS_FAILED
-                                  || response.transfer_status() == REMOTE_TRANSFER_STATUS_TIMEOUT;
-            rank.buffer_safe = response.payload_buffer_safe();
-            if (response.sdk_result_case() == RemoteOperationResponsePB::kSdkFailed)
-                rank.sdk_failed = response.sdk_failed();
-        }
-
-        std::exception_ptr freezeAndRetain(const std::exception_ptr& failure) noexcept {
-            std::lock_guard<std::mutex> lock(mutex);
-            if (marked_failure)
-                return marked_failure;
-            try {
-                marked_failure = withTargetProtection(failure, StorageLocalTargetProtection::TARGETS_HELD);
-                try {
-                    std::rethrow_exception(failure);
-                } catch (const StorageOperationCompletionUnknown& error) {
-                    diagnostics->failure_reason = kQuarantineReasons.at(static_cast<size_t>(error.reason()));
-                    if (rpc_result) {
-                        for (const auto& snapshot : rpc_result->rankSnapshots()) {
-                            if (snapshot.rank >= diagnostics->ranks.size())
-                                continue;
-                            auto& rank = diagnostics->ranks[snapshot.rank];
-                            rank.server_address = snapshot.server_address;
-                            switch (snapshot.dispatch_state) {
-                                case BroadcastDispatchState::NOT_SUBMITTED:
-                                    rank.dispatch_state = TransferRpcDispatchState::NOT_SUBMITTED;
-                                    break;
-                                case BroadcastDispatchState::POSSIBLY_SUBMITTED:
-                                case BroadcastDispatchState::LOCAL_COMPLETED:
-                                    // No CQ evidence: remote-only diagnostics
-                                    // must not infer DMA safety from local completion.
-                                    rank.dispatch_state = TransferRpcDispatchState::POSSIBLY_SUBMITTED;
-                                    break;
-                                case BroadcastDispatchState::SUBMITTED:
-                                    rank.dispatch_state = TransferRpcDispatchState::SUBMITTED;
-                                    break;
-                            }
-                            rank.dispatch_error = snapshot.dispatch_error;
-                            rank.cq_received = snapshot.cq_received;
-                            rank.cq_ok = snapshot.cq_ok;
-                            rank.grpc_code = snapshot.grpc_code;
-                            rank.grpc_message = snapshot.grpc_message;
-                            if (snapshot.cq_received && snapshot.cq_ok && snapshot.grpc_code
-                                && *snapshot.grpc_code == grpc::StatusCode::OK && snapshot.response) {
-                                rank.response_received = true;
-                                if (snapshot.response->has_remote_response())
-                                    observeResponse(rank, snapshot.response->remote_response());
-                            }
-                        }
-                    }
-                    rtp_llm::TransferResult result(
-                        ErrorInfo(ErrorCode::TRANSFER_COMPLETION_UNKNOWN, error.what()));
-                    result.execution_diagnostics = diagnostics;
-                    auto frozen = std::make_shared<FrozenTask>(FrozenTask::prepare(std::move(execution)),
-                                                               std::move(result), std::move(cleanup));
-                    prepared_slot.front() = frozen;
-                    // All ownership nodes, snapshots and the propagated exception
-                    // are ready before acquiring the first frozen reference.
-                    frozen->freeze();
-                    owner->retainFrozenTask(prepared_slot);
-                    try {
-                        RTP_LLM_LOG_WARNING("KVCM READ frozen: %s", frozen->debugString().c_str());
-                    } catch (...) {
-                        // Diagnostics cannot undo already retained custody.
-                    }
-                }
-            } catch (...) {
-                std::terminate();
-            }
-            return marked_failure;
-        }
-
-        Impl* owner;
-        FrozenTask::ExecutionInfo execution;
-        std::shared_ptr<TransferExecutionDiagnostics> diagnostics;
-        std::shared_ptr<PayloadResult> rpc_result;
-        std::list<std::shared_ptr<FrozenTask>> prepared_slot;
-        std::mutex mutex;
-        std::exception_ptr marked_failure;
-        TransferCompletionCleanup::Prepared cleanup;
-    };
-    using CoordinatedReadPtr = std::shared_ptr<CoordinatedRead>;
-
-    CoordinatedReadPtr prepareCoordinatedRead(const StorageRequest& request,
-                                              const std::vector<FunctionRequestPB>& requests) {
-        if (decode_publication_enabled_)
-            return nullptr;
-        FrozenTask::ExecutionInfo execution;
-        execution.trace_id = requests.front().remote_request().trace_id();
-        execution.operation = "read";
-        execution.request_id = request.request_id;
-        execution.remote = broadcast_manager_ != nullptr;
-        if (request.transfer_task) {
-            execution.workflow_id = request.transfer_task->workflowId();
-            execution.parent_trace_id = request.transfer_task->traceId();
-        }
-        if (broadcast_manager_) {
-            const auto& addresses = broadcast_manager_->workerAddresses();
-            for (size_t rank = 0; rank < addresses.size(); ++rank)
-                execution.expected_peers.push_back({rank, addresses[rank]});
-        } else {
-            execution.expected_peers.push_back({0, "local"});
-        }
-        execution.expected_rank_count = execution.expected_peers.size();
-        for (size_t rank = 0; rank < requests.size(); ++rank) {
-            const auto& remote = requests[rank].remote_request();
-            size_t block_index = 0;
-            for (int uri = 0; uri < remote.uris_size(); ++uri) {
-                const size_t count = remote.uri_block_counts().empty() ? 1 : remote.uri_block_counts(uri);
-                for (size_t member = 0; member < count; ++member, ++block_index) {
-                    const auto& tag = remote.group_tags(static_cast<int>(block_index));
-                    const auto& pool = pools_by_tag_.at(tag);
-                    FrozenTask::DescriptorInfo descriptor;
-                    descriptor.path_index = block_index;
-                    descriptor.source_tier = Tier::REMOTE;
-                    descriptor.target_tier = Tier::DEVICE;
-                    descriptor.rank = rank;
-                    descriptor.group_tag = tag;
-                    descriptor.source_uri = remote.uris(uri);
-                    descriptor.targets.push_back({pool, remote.block_ids(static_cast<int>(block_index)), member});
-                    execution.descriptors.push_back(std::move(descriptor));
-                }
-            }
-            RTP_LLM_CHECK(block_index == static_cast<size_t>(remote.block_ids_size()));
-        }
-        TransferCompletionCleanup::Prepared cleanup;
-        if (completion_cleanup_) {
-            TransferCompletionTarget target;
-            target.remote = execution.remote;
-            for (const auto& peer : execution.expected_peers) {
-                target.peers.push_back({peer.rank, peer.address});
-            }
-            cleanup = completion_cleanup_->prepare(std::move(target), execution.trace_id);
-        }
-        return std::make_shared<CoordinatedRead>(this, std::move(execution), std::move(cleanup));
-    }
-
-    void retainFrozenTask(std::list<std::shared_ptr<FrozenTask>>& prepared_slot) noexcept {
-        std::lock_guard<std::mutex> lock(frozen_mutex_);
-        frozen_tasks_.splice(frozen_tasks_.end(), prepared_slot);
-    }
-
-    std::vector<std::shared_ptr<FrozenTask>> frozenTasks() const {
-        std::list<std::shared_ptr<FrozenTask>>   retired;
-        std::vector<std::shared_ptr<FrozenTask>> tasks;
-        {
-            std::lock_guard<std::mutex> lock(frozen_mutex_);
-            for (auto it = frozen_tasks_.begin(); it != frozen_tasks_.end();) {
-                const auto current = it++;
-                if ((*current)->snapshot().state == FrozenTask::State::RELEASED) {
-                    retired.splice(retired.end(), frozen_tasks_, current);
-                }
-            }
-            tasks.assign(frozen_tasks_.begin(), frozen_tasks_.end());
-        }
-        // Retired tasks may own the last pool reference. Destroy them only
-        // after dropping the table mutex; RELEASING records stay registered.
-        return tasks;
+        return targets;
     }
 
     enum class TransferResult {
@@ -347,7 +167,7 @@ public:
         kv_cache_manager::BlockBuffers buffers;
     };
 
-    Impl(const StorageBackend&                      backend,
+    Impl(const KVCMStorageBackend&                  backend,
          const CacheConfig&                         cache_config,
          const KVCacheConfig&                       kv_cache_config,
          const RuntimeConfig&                       runtime_config,
@@ -823,11 +643,11 @@ public:
             std::rethrow_exception(buffer_safe_failure_);
         }
         bool source_may_be_touched = false;
-        CoordinatedReadPtr coordinated;
+        std::string read_trace;
         try {
-            readTransaction(request, match_meta, source_may_be_touched, std::move(done), coordinated);
+            readTransaction(request, match_meta, source_may_be_touched, std::move(done), read_trace);
         } catch (...) {
-            rethrowReadPayloadFailure(source_may_be_touched, coordinated);
+            rethrowReadPayloadFailure(source_may_be_touched, read_trace);
         }
     }
 
@@ -835,7 +655,7 @@ public:
                          const std::shared_ptr<StorageBackendMatchMeta>& match_meta,
                          bool&                                           source_may_be_touched,
                          ReadCompletion                                  done,
-                         CoordinatedReadPtr&                              coordinated) {
+                         std::string& read_trace) {
         RTP_LLM_CHECK_WITH_INFO(parallelism_config_.tp_rank == 0,
                                 "KVCM metadata read must run on tp rank 0, got %ld",
                                 parallelism_config_.tp_rank);
@@ -878,7 +698,7 @@ public:
 
         std::vector<FunctionRequestPB> requests(static_cast<size_t>(parallelism_config_.tp_size));
         const auto&                    spec_info = group_policy_->spec_info_map();
-        const std::string              trace_id  = nextTraceId("read", read_trace_sequence_);
+        std::string                    trace_id  = nextTraceId("read", read_trace_sequence_);
         initializeRequests(requests, REMOTE_OPERATION_READ, trace_id);
         for (size_t location_idx = 0; location_idx < locations_view.size(); ++location_idx) {
             const size_t key_idx = request.local_matched_blocks_num + location_idx;
@@ -913,14 +733,16 @@ public:
             read_outcome                   = "disabled";
             throw StorageOperationBufferSafeFailure("remote cache disabled by KVCM before read submission");
         }
-        // Capture the exact selected request targets, before any rank can
-        // start. Ordinary StorageRequest pins remain held through settlement.
-        coordinated = prepareCoordinatedRead(request, requests);
+        const TransferCompletionKey key{trace_id, TransferCompletionKey::LegacyWireField::KVCM_TRACE_ID};
+        const auto ranks = broadcast_manager_ ? broadcast_manager_->workerNum() : 1;
+        auto targets = decode_publication_enabled_ ? std::vector<TransferTargetBlock>{} : readTargets(requests);
+        RTP_LLM_CHECK(backend_.reclaimer_->registerTask(key, {broadcast_manager_ != nullptr, ranks}, std::move(targets), "kvcm"));
+        read_trace.swap(trace_id);
         if (done) {
             auto prepare_completion = [&](auto collect) {
                 Task finish = [this,
                                collect = std::move(collect),
-                               coordinated,
+                               read_trace,
                                deadline = request.transfer_task->deadline(),
                                collector,
                                start,
@@ -940,19 +762,18 @@ public:
                         }
                         collector.remote_read_token_num = static_cast<int64_t>(tokens);
                         collector.remote_read_fail_qps  = false;
-                        if (coordinated)
-                            coordinated->finalizeForForget();
+                        backend_.reclaimer_->unregisterTask(read_trace);
                     } catch (...) {
-                        rethrowReadPayloadFailure(unknown, coordinated);
+                        rethrowReadPayloadFailure(unknown, read_trace);
                     }
                 };
                 return [done = std::move(done), finish = std::move(finish)]() mutable { done(std::move(finish)); };
             };
-            dispatchPayloadAsync(requests, request, source_may_be_touched, prepare_completion, coordinated);
+            dispatchPayloadAsync(requests, request, source_may_be_touched, prepare_completion, read_trace);
             report.dismiss();
             return;
         }
-        (void)dispatchRequests(requests, request, source_may_be_touched, sdk_failed, nullptr, coordinated);
+        (void)dispatchRequests(requests, request, source_may_be_touched, sdk_failed, nullptr, nullptr, read_trace);
         source_may_be_touched = false;
         (void)remainingTimeout(request, "after read");
         // A canonical CP key already covers every shard. Do not multiply this
@@ -961,8 +782,7 @@ public:
             static_cast<int64_t>(remote_blocks * topology_->groups().front().cacheKeyTokenStride());
         collector.remote_read_fail_qps = false;
         read_outcome                   = "read_complete";
-        if (coordinated)
-            coordinated->finalizeForForget();
+        backend_.reclaimer_->unregisterTask(read_trace);
     }
 
     struct WritePublication {
@@ -982,14 +802,7 @@ public:
         }
     };
 
-    bool allowsWrite(const StorageRequest& request) const noexcept {
-        return kvcm::allowsPublication(decode_publication_enabled_, is_decode_role_, request.decode_completion);
-    }
-
     bool write(const StorageRequest& request, WriteCompletion done = {}, WritePinFilter retain_pins = {}) {
-        if (!allowsWrite(request)) {
-            return false;
-        }
         if (completion_stopped_.load()) {
             std::rethrow_exception(buffer_safe_failure_);
         }
@@ -1017,16 +830,19 @@ public:
     }
 
     [[noreturn]] void rethrowReadPayloadFailure(bool source_may_be_touched,
-                                               const CoordinatedReadPtr& coordinated) const {
-        block_tree_cache_detail::ScopeRollback finalize([&] {
-            if (coordinated)
-                coordinated->finalizeForForget();
-        });
+                                               const std::string& read_trace) const {
         try {
             rethrowPayloadFailure(source_may_be_touched);
         } catch (const StorageOperationCompletionUnknown&) {
-            if (coordinated)
-                std::rethrow_exception(coordinated->freezeAndRetain(std::current_exception()));
+            if (!read_trace.empty() && !decode_publication_enabled_) {
+                backend_.reclaimer_->freezeTargetBlocksWithTraceIDAndStillIOWorkerID(read_trace, {}, {});
+                std::rethrow_exception(copyFailureWithTargetProtection(std::current_exception(),
+                                                                      StorageTargetProtection::PROTECTED_BY_BACKEND));
+            }
+            backend_.reclaimer_->unregisterTask(read_trace);
+            throw;
+        } catch (...) {
+            backend_.reclaimer_->unregisterTask(read_trace);
             throw;
         }
     }
@@ -1036,8 +852,8 @@ public:
             rethrowPayloadFailure(source_may_be_touched);
         } catch (const StorageOperationCompletionUnknown&) {
             if (!decode_publication_enabled_)
-                std::rethrow_exception(withTargetProtection(std::current_exception(),
-                                                           StorageLocalTargetProtection::NO_LOCAL_TARGETS));
+                std::rethrow_exception(copyFailureWithTargetProtection(std::current_exception(),
+                                                                      StorageTargetProtection::NO_LOCAL_TARGETS));
             throw;
         }
     }
@@ -1048,10 +864,6 @@ public:
             reportRemoteCacheSkipped("write");
             return false;
         }
-        // Preserve ordinary Prefill publication. D publishes through the EOS
-        // transaction only; no benchmark flag may disable P's normal cache path.
-        if (!allowsWrite(request))
-            return false;
         RTP_LLM_CHECK_WITH_INFO(parallelism_config_.tp_rank == 0,
                                 "KVCM metadata write must run on tp rank 0, got %ld",
                                 parallelism_config_.tp_rank);
@@ -1231,14 +1043,14 @@ public:
                         done(std::move(finish));
                     };
                 };
-                dispatchPayloadAsync(requests, request, source_may_be_touched, prepare_completion, nullptr,
+                dispatchPayloadAsync(requests, request, source_may_be_touched, prepare_completion, {},
                                      std::shared_ptr<kvcm::PayloadDispatchProof>(async_write, &publication.dispatch_proof));
                 broadcast_timer.dismiss();
                 report.dismiss();
                 return true;
             }
 
-            auto responses = dispatchRequests(requests, request, source_may_be_touched, sdk_failed, nullptr, nullptr,
+            auto responses = dispatchRequests(requests, request, source_may_be_touched, sdk_failed, nullptr,
                                                &publication.dispatch_proof);
             source_may_be_touched = false;
             broadcast_timer.run();
@@ -1517,8 +1329,7 @@ public:
     };
     using ReadExecutionPtr = std::shared_ptr<ReadExecution>;
 
-    void cleanupExpiredMissing() {
-        read_registry_->cleanupExpiredMissing();
+    void retryReadRecoveryDiscards() {
         std::unordered_set<std::string> retries;
         {
             std::lock_guard<std::mutex> lock(recovery_discard_mutex_);
@@ -1526,40 +1337,6 @@ public:
         }
         for (const auto& trace_id : retries)
             discardReadRecovery(trace_id);
-    }
-
-    const TransferTaskRegistry& taskRegistry() const {
-        return *read_registry_;
-    }
-
-    TransferTaskRegistry::State queryReadCompletion(const std::string& trace_id,
-                                                   Clock::time_point completion_deadline) const {
-        using State = TransferTaskRegistry::State;
-        const auto state = read_registry_->queryAndBlockMissing(std::vector<std::string>{trace_id}).front();
-        if (state != State::RUNNING || !client_wrapper_ || parallelism_config_.role_type == RoleType::DECODE ||
-            kv_cache_config_.block_tree_frozen_recovery_interval_ms == 0)
-            return state;
-        const auto now = Clock::now();
-        const auto local_deadline =
-            now + std::chrono::milliseconds(kv_cache_config_.block_tree_frozen_recovery_query_timeout_ms);
-        const auto deadline = std::min(completion_deadline, local_deadline);
-        if (deadline <= now)
-            return state;
-        const auto deadline_ms =
-            std::chrono::duration_cast<std::chrono::milliseconds>(deadline.time_since_epoch()).count();
-        try {
-            if (client_wrapper_->queryReadBufferSafety(trace_id, deadline_ms)) {
-                read_registry_->finish(trace_id, true);
-                return State::BUFFER_SAFE;
-            }
-        } catch (...) {
-            RTP_LLM_LOG_WARNING("KVCM READ late safety query failed trace=%s", trace_id.c_str());
-        }
-        return state;
-    }
-
-    void setCompletionCleanup(std::shared_ptr<TransferCompletionCleanup> cleanup) {
-        completion_cleanup_ = std::move(cleanup);
     }
 
     void discardReadRecovery(const std::string& trace_id) {
@@ -1573,16 +1350,6 @@ public:
         }
     }
 
-    TransferTaskRegistry::ForgetResult forgetReadCompletion(const std::string& trace_id, bool released) {
-        const auto result = read_registry_->forget(trace_id, released);
-        if (result == TransferTaskRegistry::ForgetResult::INVALID) {
-            RTP_LLM_LOG_WARNING("KVCM READ completion forget rejected rank=%ld trace=%s reason=empty_trace",
-                                static_cast<long>(parallelism_config_.world_rank), trace_id.c_str());
-        } else if (released) {
-            discardReadRecovery(trace_id);
-        }
-        return result;
-    }
 
     ReadExecutionPtr beginReadExecution(const RemoteOperationRequestPB& request,
                                         RemoteOperationResponsePB& response) {
@@ -1606,40 +1373,39 @@ public:
         auto execution = std::make_shared<ReadExecution>();
         execution->trace_id = request.trace_id();
         execution->proof = std::make_shared<TransferBufferSafety>(
-            [registry = read_registry_, trace_id = execution->trace_id] { registry->finish(trace_id, true); });
+            [registry = backend_.reclaimer_, trace_id = execution->trace_id] { registry->ioFinishedOnWorkerWithTraceID(trace_id); });
         if (kvcm::kSupportsReadRecoveryDiscard && kv_cache_config_.block_tree_frozen_recovery_interval_ms > 0 &&
             parallelism_config_.role_type != RoleType::DECODE &&
             std::all_of(request.uris().begin(), request.uris().end(),
                         [](const auto& uri) { return uri.compare(0, 7, "pace://") == 0; })) {
             execution->recovery_cancelled = std::make_shared<std::atomic<bool>>(false);
         }
-        if (!read_registry_->begin(execution->trace_id, execution->recovery_cancelled)) {
+        TransferTaskRegistry::QueryCallback query;
+        const auto id = request.trace_id();
+        if (client_wrapper_ && parallelism_config_.role_type != RoleType::DECODE
+            && kv_cache_config_.block_tree_frozen_recovery_interval_ms > 0) {
+            query = [client = client_wrapper_, registry = std::weak_ptr<BlockTreeReclaimer>(backend_.reclaimer_),
+                     id, timeout = kv_cache_config_.block_tree_frozen_recovery_query_timeout_ms](Clock::time_point deadline) {
+                const auto now = Clock::now();
+                deadline = std::min(deadline, now + std::chrono::milliseconds(timeout));
+                const auto deadline_ms = std::chrono::duration_cast<std::chrono::milliseconds>(deadline.time_since_epoch()).count();
+                if (auto owner = registry.lock(); owner && now < deadline && client->queryReadBufferSafety(id, deadline_ms))
+                    owner->ioFinishedOnWorkerWithTraceID(id);
+            };
+        }
+        auto discard = [self = weak_from_this(), cancelled = execution->recovery_cancelled, id](bool forced) {
+            if (forced) {
+                if (cancelled)
+                    cancelled->store(true);
+                if (auto owner = self.lock())
+                    owner->discardReadRecovery(id);
+            }
+        };
+        if (!backend_.reclaimer_->registerOnWorkerTaskWithTraceID(id, std::move(query), std::move(discard))) {
             reject("duplicate_trace");
             return nullptr;
         }
-        warnReadRegistrySize();
         return execution;
-    }
-
-    void warnReadRegistrySize() const noexcept {
-        try {
-            const auto count = read_registry_->size();
-            auto threshold = next_registry_warning_.load(std::memory_order_relaxed);
-            while (threshold != 0 && count >= threshold) {
-                auto next = threshold;
-                do {
-                    next = next > std::numeric_limits<size_t>::max() / 2 ? 0 : next * 2;
-                } while (next != 0 && count >= next);
-                if (next_registry_warning_.compare_exchange_weak(threshold, next, std::memory_order_relaxed)) {
-                    RTP_LLM_LOG_WARNING("KVCM READ registry retains %zu records rank=%ld (warning threshold=%zu); "
-                                        "records are not deleted and admission remains open",
-                                        count, static_cast<long>(parallelism_config_.world_rank), threshold);
-                    return;
-                }
-            }
-        } catch (...) {
-            // Diagnostics must not revoke an execution's recorded admission.
-        }
     }
 
     bool execute(const RemoteOperationRequestPB& request, RemoteOperationResponsePB& response,
@@ -1803,7 +1569,6 @@ public:
         if (client_wrapper_) {
             client_wrapper_->shutdown();
         }
-        // Upstream keeps uncertain source pages FROZEN until pool destruction.
     }
 
     // A running RPC still participates in ordinary shutdown accounting; this
@@ -2648,7 +2413,7 @@ private:
     template<typename PrepareCompletion>
     void dispatchPayloadAsync(std::vector<FunctionRequestPB>& requests, const StorageRequest& request,
                               bool& source_may_be_touched, PrepareCompletion prepare_completion,
-                              CoordinatedReadPtr coordinated = nullptr,
+                              std::string read_trace = {},
                               std::shared_ptr<kvcm::PayloadDispatchProof> proof = {}) {
         if (request.decode_completion) {
             dispatchLocalPeers(std::move(requests), request, source_may_be_touched,
@@ -2656,9 +2421,9 @@ private:
             return;
         }
         if (broadcast_manager_) {
-            auto result = dispatchRemoteRequests(requests, request, source_may_be_touched, coordinated, proof.get());
-            onPayloadDone(result, prepare_completion([this, result, proof](bool& touched, bool& sdk_failed) {
-                return collectResponses(result, touched, sdk_failed, proof.get());
+            auto result = dispatchRemoteRequests(requests, request, source_may_be_touched, proof.get());
+            onPayloadDone(result, prepare_completion([this, result, proof, read_trace](bool& touched, bool& sdk_failed) {
+                return collectResponses(result, touched, sdk_failed, proof.get(), read_trace);
             }));
             return;
         }
@@ -2695,11 +2460,12 @@ private:
             return std::move(local->responses);
         });
         // complete owns the StorageRequest and its pins through settlement.
+        auto payload_requests = std::make_shared<std::vector<FunctionRequestPB>>(std::move(requests));
         std::function<void()> run =
-            [this, requests = std::move(requests), &request, local, complete, execution, coordinated, proof]() mutable {
+            [this, payload_requests = std::move(payload_requests), &request, local, complete, execution, proof, read_trace]() mutable {
                 try {
-                    local->responses = dispatchRequests(requests, request, local->touched, local->sdk_failed,
-                                                        execution, coordinated, proof.get());
+                    local->responses = dispatchRequests(*payload_requests, request, local->touched, local->sdk_failed,
+                                                        execution, proof.get(), read_trace);
                 } catch (...) {
                     if (proof) proof->notStarted(); // Never downgrades a possibly started transfer.
                     local->error = std::current_exception();
@@ -2738,7 +2504,6 @@ private:
     std::shared_ptr<PayloadResult> dispatchRemoteRequests(std::vector<FunctionRequestPB>& requests,
                                                           const StorageRequest&           storage_request,
                                                           bool&                           source_may_be_touched,
-                                                          const CoordinatedReadPtr&       coordinated = nullptr,
                                                           kvcm::PayloadDispatchProof*     proof = nullptr) {
         block_tree_cache_detail::ScopeRollback submission_closed([&] {
             if (proof) {
@@ -2766,14 +2531,8 @@ private:
             return stub->AsyncExecuteFunction(context.get(), request, queue);
         };
         source_may_be_touched = true;
-        if (coordinated) {
-            for (auto& rank : coordinated->diagnostics->ranks)
-                rank.dispatch_state = TransferRpcDispatchState::POSSIBLY_SUBMITTED;
-        }
         auto result = broadcast_manager_->broadcast<FunctionRequestPB, FunctionResponsePB>(
             requests, timeout_ms, rpc_call, storage_request.request_id, direction, /*fatal_on_error=*/false);
-        if (coordinated)
-            coordinated->rpc_result = result;
         if (result == nullptr) {
             if (proof) {
                 proof->notStarted();
@@ -2790,7 +2549,7 @@ private:
 
     std::vector<FunctionResponsePB> collectResponses(const std::shared_ptr<PayloadResult>& result,
                                                      bool& source_may_be_touched, bool& sdk_failed,
-                                                     kvcm::PayloadDispatchProof* proof = nullptr) {
+                                                     kvcm::PayloadDispatchProof* proof = nullptr, const std::string& read_trace = {}) {
         if (proof && proof->neverStarted()) {
             source_may_be_touched = false;
             std::rethrow_exception(buffer_safe_failure_);
@@ -2798,14 +2557,28 @@ private:
         auto       responses = result->responses();
         const bool success   = result->success();
         bool exceptional_unknown = false;
+        const bool track_workers = !read_trace.empty() && !decode_publication_enabled_ && responses.size() == broadcast_manager_->workerNum();
+        std::vector<size_t> pending;
         for (size_t rank = 0; rank < responses.size(); ++rank) {
             const auto& response = responses[rank];
-            if ((success || result->rpcSucceeded(rank)) && response.has_remote_response()) {
+            const bool acknowledged = (success || result->rpcSucceeded(rank)) && response.has_remote_response();
+            if (acknowledged) {
                 const auto& payload = response.remote_response();
                 sdk_failed = sdk_failed || payload.sdk_failed();
                 exceptional_unknown = exceptional_unknown
                                       || payload.transfer_status() == REMOTE_TRANSFER_STATUS_EXCEPTION_UNKNOWN;
             }
+            if (track_workers) {
+                const auto& payload = response.remote_response();
+                if (!acknowledged || !RemoteTransferStatusPB_IsValid(payload.transfer_status())
+                    || payload.transfer_status() == REMOTE_TRANSFER_STATUS_UNSPECIFIED || !payload.payload_buffer_safe())
+                    pending.push_back(rank);
+            }
+        }
+        if (track_workers) {
+            source_may_be_touched = !pending.empty();
+            if (!pending.empty())
+                backend_.reclaimer_->freezeTargetBlocksWithTraceIDAndStillIOWorkerID(read_trace, {}, pending);
         }
         if (!success) {
             // Preserve a known SDK exception on any acknowledged rank even if
@@ -2862,12 +2635,11 @@ private:
                                                      bool&                           source_may_be_touched,
                                                      bool&                           sdk_failed,
                                                      ReadExecutionPtr                execution = nullptr,
-                                                     const CoordinatedReadPtr&       coordinated = nullptr,
-                                                     kvcm::PayloadDispatchProof*     proof = nullptr) {
+                                                     kvcm::PayloadDispatchProof*     proof = nullptr, const std::string& read_trace = {}) {
         if (broadcast_manager_) {
-            auto result = dispatchRemoteRequests(requests, storage_request, source_may_be_touched, coordinated, proof);
+            auto result = dispatchRemoteRequests(requests, storage_request, source_may_be_touched, proof);
             (void)result->waitDone(/*timeout_ms=*/0, /*fatal_on_error=*/false);
-            return collectResponses(result, source_may_be_touched, sdk_failed, proof);
+            return collectResponses(result, source_may_be_touched, sdk_failed, proof, read_trace);
         }
         block_tree_cache_detail::ScopeRollback unsubmitted([&] {
             if (execution)
@@ -2888,15 +2660,13 @@ private:
             requests.front().mutable_remote_request()->set_timeout_ms(timeout_ms);
             block_tree_cache_detail::ScopeRollback collect_sdk_failure([&] {
                 sdk_failed = sdk_failed || local_response.sdk_failed();
-                if (coordinated)
-                    CoordinatedRead::observeResponse(coordinated->diagnostics->ranks.front(), local_response);
             });
-            if (coordinated)
-                coordinated->diagnostics->ranks.front().dispatch_state = TransferRpcDispatchState::SUBMITTED;
             unsubmitted.dismiss();
             executePayload(requests.front().remote_request(), local_response,
                            *storage_request.transfer_task, &source_may_be_touched, std::move(execution), proof);
         }
+        if (!read_trace.empty() && !decode_publication_enabled_)
+            source_may_be_touched = !responses.front().remote_response().payload_buffer_safe();
         return validateResponses(std::move(responses), 1, source_may_be_touched);
     }
 
@@ -2945,21 +2715,16 @@ private:
     std::exception_ptr buffer_safe_failure_, completion_unknown_failure_, completion_timeout_failure_;
     std::exception_ptr payload_exception_failure_;
     StorageBackend::BufferResolver file_resolver_;
-    std::shared_ptr<PublicationBudget>                   publication_budget_;
-    const StorageBackend&                backend_;
+    std::shared_ptr<PublicationBudget> publication_budget_;
+    const KVCMStorageBackend& backend_;
     CacheConfig                          cache_config_;
     KVCacheConfig                        kv_cache_config_;
     RuntimeConfig                        runtime_config_;
     ParallelismConfig                    parallelism_config_;
     SpeculativeExecutionConfig           sp_config_;
     std::shared_ptr<BroadcastManager>                    broadcast_manager_;
-    std::shared_ptr<TransferTaskRegistry>                 read_registry_{std::make_shared<TransferTaskRegistry>()};
-    std::mutex                                           recovery_discard_mutex_;
-    std::unordered_set<std::string>                      pending_recovery_discards_;
-    std::shared_ptr<TransferCompletionCleanup>            completion_cleanup_;
-    mutable std::atomic<size_t>                           next_registry_warning_{4096};
-    mutable std::mutex                                   frozen_mutex_;
-    mutable std::list<std::shared_ptr<FrozenTask>>        frozen_tasks_;
+    std::mutex recovery_discard_mutex_;
+    std::unordered_set<std::string> pending_recovery_discards_;
     // TP1 shares its local pool. Multi-rank payloads use it for reads and a separate pool for writes.
     std::unique_ptr<BlockTreeTaskPool>                  local_payload_pool_;
     std::unique_ptr<BlockTreeTaskPool>                  rank_write_pool_;
@@ -3002,7 +2767,8 @@ KVCMStorageBackend::KVCMStorageBackend(const CacheConfig&                       
                    std::make_shared<BlockTreeCacheMetricsReporter>(metrics_reporter),
                    parallelism_config.world_rank,
                    std::chrono::milliseconds(kv_cache_config.kvcm_task_timeout_ms)),
-    impl_(std::make_unique<Impl>(*this,
+    reclaimer_(std::make_shared<BlockTreeReclaimer>()),
+    impl_(std::make_shared<Impl>(*this,
                                  cache_config,
                                  kv_cache_config,
                                  runtime_config,
@@ -3027,14 +2793,6 @@ BlockTreeQueueSizes KVCMStorageBackend::queueSizes() const {
 
 std::optional<KVCMStorageBackend::ControlConfig> KVCMStorageBackend::controlConfig() const {
     return impl_->controlConfig();
-}
-
-StorageWriteTask KVCMStorageBackend::prepareWrite(StorageRequest request) {
-    // Gate only new remote writes before source pins or executor work. Tree
-    // callers keep their local insertion; existing I/O still settles normally.
-    if (!impl_->allowsWrite(request))
-        return {};
-    return StorageBackend::prepareWrite(std::move(request));
 }
 
 bool KVCMStorageBackend::initImpl() {
@@ -3095,6 +2853,11 @@ void KVCMStorageBackend::onQuarantineChanged(uint64_t                          g
     impl_->reportQuarantineState(generation, task_count, block_count, breakdown);
 }
 
+bool KVCMStorageBackend::executeRemoteRequest(const RemoteOperationRequestPB& request, FunctionResponsePB& response) {
+    const bool success = execute(request, *response.mutable_remote_response());
+    return success || request.op() == REMOTE_OPERATION_READ || request.op() == REMOTE_OPERATION_WRITE;
+}
+
 bool KVCMStorageBackend::execute(const RemoteOperationRequestPB& request, RemoteOperationResponsePB& response) {
     Impl::ReadExecutionPtr execution;
     if (request.op() == REMOTE_OPERATION_READ) {
@@ -3141,29 +2904,12 @@ bool KVCMStorageBackend::execute(const RemoteOperationRequestPB& request, Remote
     }
 }
 
-void KVCMStorageBackend::cleanupExpiredMissing() {
-    impl_->cleanupExpiredMissing();
-}
-
-const TransferTaskRegistry& KVCMStorageBackend::taskRegistry() const {
-    return impl_->taskRegistry();
-}
-
-TransferTaskRegistry::State KVCMStorageBackend::queryReadCompletion(const std::string& trace_id,
-                                                                  Clock::time_point completion_deadline) const {
-    return impl_->queryReadCompletion(trace_id, completion_deadline);
-}
-
-TransferTaskRegistry::ForgetResult KVCMStorageBackend::forgetReadCompletion(const std::string& trace_id, bool released) {
-    return impl_->forgetReadCompletion(trace_id, released);
-}
-
-void KVCMStorageBackend::setCompletionCleanup(std::shared_ptr<TransferCompletionCleanup> cleanup) {
-    impl_->setCompletionCleanup(std::move(cleanup));
-}
-
-std::vector<std::shared_ptr<FrozenTask>> KVCMStorageBackend::frozenTasks() const {
-    return impl_->frozenTasks();
+void KVCMStorageBackend::setReclaimer(std::shared_ptr<BlockTreeReclaimer> reclaimer) {
+    reclaimer_ = std::move(reclaimer);
+    reclaimer_->setRecoveryMaintenance([impl = std::weak_ptr<Impl>(impl_)] {
+        if (auto owner = impl.lock())
+            owner->retryReadRecoveryDiscards();
+    });
 }
 
 }  // namespace rtp_llm
