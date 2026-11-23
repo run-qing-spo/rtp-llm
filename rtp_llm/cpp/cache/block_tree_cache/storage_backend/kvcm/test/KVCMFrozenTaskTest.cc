@@ -34,12 +34,12 @@ TEST(KVCMFrozenTaskTest, TargetsExcludeLocalPrefixFilteredLinearStateAndUnsentTa
     size_t tags = 0;
     EXPECT_CALL(*client, loadKvCachesForTag(_, _, _, _)).Times(4)
         .WillRepeatedly(Invoke([&](const auto&, const auto&, auto&, const auto&) {
-            EXPECT_EQ(backend->reclaimer_->localState(trace.front()), TransferTaskRegistry::State::RUNNING);
+            EXPECT_EQ(backend->reclaimer_->localState(trace.front()), BlockTreeReclaimer::State::RUNNING);
             return ++tags < 4;
         }));
     EXPECT_TRUE(readResult(*backend.backend, request, matched.match_meta).ok());
     ASSERT_TRUE(waitForBackendOperationsForTest(*backend.backend));
-    EXPECT_EQ(backend->reclaimer_->localState(trace.front()), TransferTaskRegistry::State::BUFFER_SAFE);
+    EXPECT_EQ(backend->reclaimer_->localState(trace.front()), BlockTreeReclaimer::State::BUFFER_SAFE);
     EXPECT_TRUE(backend->reclaimer_->frozen_.empty());
     trace.front() = "block_tree_read_2";
     std::promise<ErrorInfo> done;
@@ -49,7 +49,7 @@ TEST(KVCMFrozenTaskTest, TargetsExcludeLocalPrefixFilteredLinearStateAndUnsentTa
         done.set_value(std::move(error));
     });
     EXPECT_FALSE(await(completed).ok());
-    EXPECT_EQ(backend->reclaimer_->localState(trace.front()), TransferTaskRegistry::State::RUNNING);
+    EXPECT_EQ(backend->reclaimer_->localState(trace.front()), BlockTreeReclaimer::State::RUNNING);
     ASSERT_TRUE(waitForBackendOperationsForTest(*backend.backend));
     const auto& record = backend->reclaimer_->frozen_.at(trace.front());
     std::set<std::pair<IBlockPool*, BlockIdxType>> targets;

@@ -721,7 +721,7 @@ public:
 TEST(BlockTransferDispatcherTest, OneTraceBecomesSafeOnlyAfterSubmissionAndEveryBatchProof) {
     auto engine = std::make_shared<ControlledProducer>();
     BlockTransferDispatcher dispatcher(engine);
-    using State = TransferTaskRegistry::State;
+    using State = BlockTreeReclaimer::State;
     TransferTask execution({descriptor(0), descriptor(0), descriptor(0)}, std::chrono::seconds(30));
     const auto trace = execution.traceId();
     engine->on_submit = [&](uint64_t id) {
@@ -734,7 +734,7 @@ TEST(BlockTransferDispatcherTest, OneTraceBecomesSafeOnlyAfterSubmissionAndEvery
     TransferTask late({descriptor(0)}, std::chrono::seconds(30));
     auto worker = dispatcher.reclaimer_;
     ASSERT_EQ(worker->queryIfIoFinishedInOneWorkerWithTraceIDs({std::to_string(late.traceId())}).front(), State::REJECTED);
-    ASSERT_EQ(worker->forgetTaskInfoOnWorker({std::to_string(late.traceId())}).front(), TransferTaskRegistry::ForgetResult::DONE);
+    ASSERT_EQ(worker->forgetTaskInfoOnWorker({std::to_string(late.traceId())}).front(), BlockTreeReclaimer::ForgetResult::DONE);
     auto rejected = dispatcher.executePerRank(std::move(late));
     EXPECT_EQ(rejected->result().copy_error, CacheCopyError::NOT_EXECUTED);
     EXPECT_TRUE(engine->contexts.empty());

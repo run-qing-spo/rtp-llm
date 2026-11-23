@@ -1,4 +1,5 @@
 #include "rtp_llm/cpp/cache/block_tree_cache/BlockTreeReclaimer.h"
+#include "rtp_llm/cpp/cache/block_tree_cache/block_pool/IBlockPool.h"
 #include "rtp_llm/cpp/cache/block_tree_cache/test/CompletionRpcTestServer.h"
 #include "rtp_llm/cpp/model_rpc/BroadcastManager.h"
 
@@ -255,7 +256,7 @@ using Registry     = BlockTreeReclaimer;
 using State        = Registry::State;
 using ForgetResult = Registry::ForgetResult;
 
-TEST(TransferTaskRegistryTest, OptionalCallbacksCanPublishCompletionAndRetryForget) {
+TEST(BlockTreeReclaimerTest, OptionalCallbacksCanPublishCompletionAndRetryForget) {
     Registry worker;
     int queries = 0;
     int forgets = 0;
@@ -277,7 +278,7 @@ TEST(TransferTaskRegistryTest, OptionalCallbacksCanPublishCompletionAndRetryForg
     EXPECT_EQ(forgets, 2);
 }
 
-TEST(TransferTaskRegistryTest, ForcedForgetRemovesRunningRecordAfterActiveQuery) {
+TEST(BlockTreeReclaimerTest, ForcedForgetRemovesRunningRecordAfterActiveQuery) {
     Registry worker;
     bool discarded = false;
     ASSERT_TRUE(worker.registerOnWorkerTaskWithTraceID("read", [&](auto) {
@@ -295,7 +296,7 @@ TEST(TransferTaskRegistryTest, ForcedForgetRemovesRunningRecordAfterActiveQuery)
     }
 }
 
-TEST(TransferTaskRegistryTest, MissingAdmissionFenceSurvivesForgetUntilLateArrivalOrExpiry) {
+TEST(BlockTreeReclaimerTest, MissingAdmissionFenceSurvivesForgetUntilLateArrivalOrExpiry) {
     auto now = Registry::Clock::time_point{};
     Registry registry;
     registry.now_ = [&] { return now; };

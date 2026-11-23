@@ -171,7 +171,7 @@ TEST_F(KVCMTimeoutRecoverySmokeTest, ReadRejectsTraceAlreadyRegisteredByBlockTra
     EXPECT_FALSE(worker.backend->execute(read, response));
     EXPECT_EQ(response.transfer_status(), REMOTE_TRANSFER_STATUS_FAILED);
     EXPECT_EQ(worker.backend->reclaimer_.get(), &registry);
-    EXPECT_EQ(registry.localState("71"), TransferTaskRegistry::State::RUNNING);
+    EXPECT_EQ(registry.localState("71"), BlockTreeReclaimer::State::RUNNING);
 }
 
 TEST_F(KVCMTimeoutRecoverySmokeTest, LostNativeReadReplyRecoversThroughWorkerQueryAndForget) {
@@ -211,8 +211,8 @@ TEST_F(KVCMTimeoutRecoverySmokeTest, LostNativeReadReplyRecoversThroughWorkerQue
     block_tree_cache_detail::ScopeRollback stop([&] { reclaimer.stop(); });
     ASSERT_TRUE(waitForRecovery([&] {
         return !owner.environment.device_pool->isFrozen(target.get().front())
-               && owner.backend->reclaimer_->localState(trace) == TransferTaskRegistry::State::UNKNOWN
-               && peer.backend->reclaimer_->localState(trace) == TransferTaskRegistry::State::UNKNOWN;
+               && owner.backend->reclaimer_->localState(trace) == BlockTreeReclaimer::State::UNKNOWN
+               && peer.backend->reclaimer_->localState(trace) == BlockTreeReclaimer::State::UNKNOWN;
     }));
     EXPECT_EQ(queries_to_safe_worker.load(), 0u);
 }

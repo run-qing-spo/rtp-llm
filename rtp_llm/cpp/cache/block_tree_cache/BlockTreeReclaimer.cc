@@ -6,6 +6,7 @@
 #include <optional>
 #include <set>
 
+#include "rtp_llm/cpp/cache/block_tree_cache/block_pool/IBlockPool.h"
 #include "rtp_llm/cpp/cache/block_tree_cache/metrics/BlockTreeCacheMetricsReporter.h"
 #include "rtp_llm/cpp/config/ConfigModules.h"
 #include "rtp_llm/cpp/model_rpc/BroadcastManager.h"
@@ -426,7 +427,7 @@ bool BlockTreeReclaimer::ioFinishedOnWorkerWithTraceID(const std::string& id) {
     return true;
 }
 
-std::vector<TransferTaskRegistry::State> BlockTreeReclaimer::queryIfIoFinishedInOneWorkerWithTraceIDs(const std::vector<std::string>& ids) {
+std::vector<BlockTreeReclaimer::State> BlockTreeReclaimer::queryIfIoFinishedInOneWorkerWithTraceIDs(const std::vector<std::string>& ids) {
     std::vector<State> result;
     result.reserve(ids.size());
     for (const auto& id : ids)
@@ -434,7 +435,7 @@ std::vector<TransferTaskRegistry::State> BlockTreeReclaimer::queryIfIoFinishedIn
     return result;
 }
 
-std::vector<TransferTaskRegistry::ForgetResult> BlockTreeReclaimer::forgetTaskInfoOnWorker(const std::vector<std::string>& ids, bool forced) {
+std::vector<BlockTreeReclaimer::ForgetResult> BlockTreeReclaimer::forgetTaskInfoOnWorker(const std::vector<std::string>& ids, bool forced) {
     std::vector<ForgetResult> result;
     result.reserve(ids.size());
     for (const auto& id : ids)
@@ -467,7 +468,7 @@ void BlockTreeReclaimer::cleanupExpiredMissing() {
     }
 }
 
-TransferTaskRegistry::State BlockTreeReclaimer::localState(const std::string& id) const {
+BlockTreeReclaimer::State BlockTreeReclaimer::localState(const std::string& id) const {
     std::lock_guard<std::mutex> lock(worker_mutex_);
     const auto it = records_.find(id);
     return it == records_.end() ? State::UNKNOWN : it->second.state;
@@ -496,7 +497,7 @@ BlockTreeReclaimer::Record& BlockTreeReclaimer::findOrRejectMissing(const std::s
     return record;
 }
 
-TransferTaskRegistry::State BlockTreeReclaimer::queryOne(const std::string& id, Clock::time_point deadline) {
+BlockTreeReclaimer::State BlockTreeReclaimer::queryOne(const std::string& id, Clock::time_point deadline) {
     if (id.empty())
         return State::UNKNOWN;
     std::unique_lock<std::mutex> lock(worker_mutex_);
@@ -516,7 +517,7 @@ TransferTaskRegistry::State BlockTreeReclaimer::queryOne(const std::string& id, 
     return record.state;
 }
 
-TransferTaskRegistry::ForgetResult BlockTreeReclaimer::forgetOne(const std::string& id, bool forced) {
+BlockTreeReclaimer::ForgetResult BlockTreeReclaimer::forgetOne(const std::string& id, bool forced) {
     if (id.empty())
         return ForgetResult::INVALID;
     std::unique_lock<std::mutex> lock(worker_mutex_);

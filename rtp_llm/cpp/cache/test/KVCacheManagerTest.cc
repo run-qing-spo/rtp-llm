@@ -2589,8 +2589,8 @@ TEST_F(KVCacheManagerTest, FrozenForceReleaseTimeoutReachesRecoveryWorker) {
         age(std::chrono::minutes(10));
         EXPECT_EQ(reclaimer.frozen_.empty(), timeout_ms != 0);
         reclaimer.drainForget();
-        EXPECT_EQ(reclaimer.forget_queue_.size(), timeout_ms == 0 ? 0u : 1u);
-        EXPECT_EQ(reclaimer.records_.size(), 1u);
+        EXPECT_TRUE(reclaimer.forget_queue_.empty());
+        EXPECT_EQ(reclaimer.records_.size(), timeout_ms == 0 ? 1u : 0u);
         engine->last_proof->report(true);
         reclaimer.queryFrozen();
         reclaimer.drainForget();
@@ -2619,9 +2619,9 @@ TEST_F(KVCacheManagerTest, ForgetProgressesWithRecoveryDisabledAndWhileItsWorker
         ASSERT_TRUE(reclaimer.registerTask(trace, {false, 1}, {}));
         reclaimer.unregisterTask(trace);
         const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
-        while (reclaimer.localState(id) != TransferTaskRegistry::State::UNKNOWN && std::chrono::steady_clock::now() < deadline)
+        while (reclaimer.localState(id) != BlockTreeReclaimer::State::UNKNOWN && std::chrono::steady_clock::now() < deadline)
             std::this_thread::sleep_for(std::chrono::milliseconds(5));
-        EXPECT_EQ(reclaimer.localState(id), TransferTaskRegistry::State::UNKNOWN);
+        EXPECT_EQ(reclaimer.localState(id), BlockTreeReclaimer::State::UNKNOWN);
     };
     ASSERT_NO_FATAL_FAILURE(check_cleanup(1001));
     reclaimer.stop();

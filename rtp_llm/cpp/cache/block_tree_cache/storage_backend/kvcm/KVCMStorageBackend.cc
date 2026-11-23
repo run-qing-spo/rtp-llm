@@ -1068,7 +1068,7 @@ public:
                         [](const auto& uri) { return uri.compare(0, 7, "pace://") == 0; })) {
             execution->recovery_cancelled = std::make_shared<std::atomic<bool>>(false);
         }
-        TransferTaskRegistry::QueryCallback query;
+        BlockTreeReclaimer::QueryCallback query;
         const auto id = request.trace_id();
         if (client_wrapper_ && parallelism_config_.role_type != RoleType::DECODE) {
             query = [client = client_wrapper_, registry = std::weak_ptr<BlockTreeReclaimer>(backend_.reclaimer_),

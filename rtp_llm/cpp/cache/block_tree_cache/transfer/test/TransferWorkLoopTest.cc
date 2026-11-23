@@ -677,7 +677,7 @@ TEST_F(TransferWorkLoopTest, OrdinaryEntryExceptionCompletesOnlyThatTask) {
     EXPECT_TRUE(context->done());
     EXPECT_FALSE(context->success());
     EXPECT_TRUE(context->result().buffer_safe);
-    EXPECT_EQ(registry.localState(trace), TransferTaskRegistry::State::BUFFER_SAFE);
+    EXPECT_EQ(registry.localState(trace), BlockTreeReclaimer::State::BUFFER_SAFE);
     EXPECT_EQ(context->errorInfo().ToString(), "batch preparation failed");
     EXPECT_EQ(owner.outstandingBatches(), 0u);
 }
