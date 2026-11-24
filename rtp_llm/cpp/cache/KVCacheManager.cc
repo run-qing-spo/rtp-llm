@@ -305,10 +305,6 @@ KVCacheManager::KVCacheManager(const CacheConfig&                 config,
 }
 
 KVCacheManager::~KVCacheManager() {
-    // Queries, cleanup and capacity notifications must finish while the cache, RPC
-    // manager and allocation wait state are still alive. Never join under a lock.
-    if (block_tree_cache_)
-        block_tree_cache_->stopBackgroundTasks();
     {
         std::lock_guard<std::mutex> lock(allocation_wait_state_->mutex);
         allocation_wait_state_->stopped.store(true, std::memory_order_release);
