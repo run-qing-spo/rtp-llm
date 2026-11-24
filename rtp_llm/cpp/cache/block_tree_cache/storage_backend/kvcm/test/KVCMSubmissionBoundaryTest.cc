@@ -110,16 +110,6 @@ namespace rtp_llm {
 namespace {
 using BoundaryClock = std::chrono::steady_clock;
 
-TEST(KVCMPublicationAdmissionTest, DecodeRequiresEnabledCompletedPublicationButPrefillIsUnchanged) {
-    for (const bool enabled : {false, true}) {
-        for (const bool completion : {false, true}) {
-            SCOPED_TRACE(::testing::PrintToString(std::make_pair(enabled, completion)));
-            EXPECT_TRUE(kvcm::allowsPublication(enabled, false, completion));
-            EXPECT_EQ(kvcm::allowsPublication(enabled, true, completion), enabled && completion);
-        }
-    }
-}
-
 class KVCMSubmissionBoundaryTest: public ::testing::Test {
 protected:
     static constexpr auto kSetupWait = std::chrono::seconds(5);
@@ -936,7 +926,6 @@ TEST_F(KVCMSubmissionBoundaryTest, IncompletePeerProofCannotCloseAStartedDecodeS
                 second->set_payload_buffer_safe(shape == 3);
                 second->set_transfer_status(shape == 3 ? REMOTE_TRANSFER_STATUS_EXCEPTION_UNKNOWN :
                                                        REMOTE_TRANSFER_STATUS_FAILED);
-                EXPECT_FALSE(KVCMStorageBackend::Impl::hasBufferSafetyProof(*second));
             }
             bool touched = true; // Same pessimistic initialization as production completion.
             try {

@@ -443,7 +443,7 @@ TEST(KVCMLocalTest, DirectClientRoutesMetadataAndPayload) {
     EXPECT_EQ(*destruction_count, 1);
 }
 
-TEST(KVCMLocalTest, DecodeOffSkipsRemoteWritesBeforePinningButKeepsLocalTreeAndRemoteReads) {
+TEST(KVCMLocalTest, DecodeOffAllowsRemoteWritesAndReads) {
     autil::EnvGuard feature("RTP_LLM_REMOTE_CACHE_ENABLE_DECODE_PUBLISH", "0");
     for (const auto role : {RoleType::PREFILL, RoleType::DECODE}) {
         SCOPED_TRACE(static_cast<int>(role));
@@ -459,11 +459,11 @@ TEST(KVCMLocalTest, DecodeOffSkipsRemoteWritesBeforePinningButKeepsLocalTreeAndR
             allocation.block_mask = kv_cache_manager::BlockMaskOffset{0};
             allocation.locations = {{{"tp0_Fdefault", "write_uri"}}};
             EXPECT_CALL(*client, getWriteLocation(_, _, _, _, _, _, _))
-                .Times(decode ? 0 : 1).WillRepeatedly(Return(std::make_pair(true, allocation)));
+                .Times(1).WillRepeatedly(Return(std::make_pair(true, allocation)));
             EXPECT_CALL(*client, saveKvCachesForTag(_, _, _, _))
-                .Times(decode ? 0 : 1)
+                .Times(1)
                 .WillRepeatedly(Return(std::make_pair(true, kv_cache_manager::UriStrVec{"write_uri"})));
-            EXPECT_CALL(*client, finishWrite(_, _, _, _, _)).Times(decode ? 0 : 1)
+            EXPECT_CALL(*client, finishWrite(_, _, _, _, _)).Times(1)
                 .WillRepeatedly(Invoke([](const auto&, const auto&, const auto&, const auto& mask, const auto&) {
                     const auto* offset = std::get_if<kv_cache_manager::BlockMaskOffset>(&mask);
                     EXPECT_NE(offset, nullptr);
@@ -494,7 +494,7 @@ TEST(KVCMLocalTest, DecodeOffSkipsRemoteWritesBeforePinningButKeepsLocalTreeAndR
                 for (const bool completion : {false, true}) {
                     auto request = makeStorageRequest(environment);
                     request.decode_completion = completion;
-                    EXPECT_FALSE(remote.prepareWrite(std::move(request)));
+                    EXPECT_TRUE(remote.prepareWrite(std::move(request)));
                     EXPECT_EQ(environment.device_pool->refCount(environment.block_id), original_refs);
                 }
             }

@@ -27,7 +27,6 @@ test_deps = [
 
 cc_test(
     name = "block_tree_reclaimer_test",
-    visibility = ["//rtp_llm/test/smoke:__pkg__"],
     testonly = True,
     exec_properties = {"gpu": "L20_CU13"},
     srcs = ["BlockTreeReclaimerTest.cc"],

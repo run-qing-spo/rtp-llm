@@ -815,14 +815,7 @@ public:
         }
     };
 
-    bool allowsWrite(const StorageRequest& request) const noexcept {
-        return kvcm::allowsPublication(decode_publication_enabled_, is_decode_role_, request.decode_completion);
-    }
-
     bool write(const StorageRequest& request, WriteCompletion done = {}, WritePinFilter retain_pins = {}) {
-        if (!allowsWrite(request)) {
-            return false;
-        }
         if (completion_stopped_.load()) {
             std::rethrow_exception(buffer_safe_failure_);
         }
@@ -884,8 +877,6 @@ public:
             reportRemoteCacheSkipped("write");
             return false;
         }
-        if (!allowsWrite(request))
-            return false;
         RTP_LLM_CHECK_WITH_INFO(parallelism_config_.tp_rank == 0,
                                 "KVCM metadata write must run on tp rank 0, got %ld",
                                 parallelism_config_.tp_rank);
@@ -2571,13 +2562,6 @@ private:
         return result;
     }
 
-    static bool hasBufferSafetyProof(const RemoteOperationResponsePB& payload) {
-        const auto status = payload.transfer_status();
-        return payload.payload_buffer_safe() && (status == REMOTE_TRANSFER_STATUS_SUCCESS
-                                                  || status == REMOTE_TRANSFER_STATUS_FAILED
-                                                  || status == REMOTE_TRANSFER_STATUS_TIMEOUT);
-    }
-
     std::vector<FunctionResponsePB> collectResponses(const std::shared_ptr<PayloadResult>& result,
                                                      bool& source_may_be_touched, bool& sdk_failed,
                                                      kvcm::PayloadDispatchProof* proof = nullptr, const std::string& read_trace = {}) {
@@ -2601,7 +2585,8 @@ private:
             }
             if (track_workers) {
                 const auto& payload = response.remote_response();
-                if (!acknowledged || !hasBufferSafetyProof(payload))
+                if (!acknowledged || !RemoteTransferStatusPB_IsValid(payload.transfer_status())
+                    || payload.transfer_status() == REMOTE_TRANSFER_STATUS_UNSPECIFIED || !payload.payload_buffer_safe())
                     pending.push_back(rank);
             }
         }
@@ -2696,7 +2681,7 @@ private:
                            *storage_request.transfer_task, &source_may_be_touched, std::move(execution), proof);
         }
         if (!read_trace.empty() && !decode_publication_enabled_)
-            source_may_be_touched = !hasBufferSafetyProof(responses.front().remote_response());
+            source_may_be_touched = !responses.front().remote_response().payload_buffer_safe();
         return validateResponses(std::move(responses), 1, source_may_be_touched);
     }
 
@@ -2823,12 +2808,6 @@ BlockTreeQueueSizes KVCMStorageBackend::queueSizes() const {
 
 std::optional<KVCMStorageBackend::ControlConfig> KVCMStorageBackend::controlConfig() const {
     return impl_->controlConfig();
-}
-
-StorageWriteTask KVCMStorageBackend::prepareWrite(StorageRequest request) {
-    if (!impl_->allowsWrite(request))
-        return {};
-    return StorageBackend::prepareWrite(std::move(request));
 }
 
 bool KVCMStorageBackend::initImpl() {

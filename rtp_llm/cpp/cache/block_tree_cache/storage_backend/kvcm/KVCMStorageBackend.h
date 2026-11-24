@@ -40,7 +40,6 @@ public:
                        std::shared_ptr<kvcm::ClientWrapper>       client_wrapper   = nullptr);
     ~KVCMStorageBackend() override;
     BlockTreeQueueSizes queueSizes() const override;
-    StorageWriteTask prepareWrite(StorageRequest request) override;
 
     struct ControlConfig {
         std::string              instance_group;
@@ -65,6 +64,7 @@ public:
     captureCompletedDecode(const BatchKVCacheResource& resource, size_t computed_end, bool finished = true) override;
 
 protected:
+    bool quarantineUnknownWrite() const noexcept override { return false; }
     bool               initImpl() override;
     StorageMatchResult matchImpl(const StorageRequest& request) override;
     void readImpl(const StorageRequest& request, const std::shared_ptr<StorageBackendMatchMeta>& match_meta) override;

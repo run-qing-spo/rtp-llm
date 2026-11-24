@@ -112,7 +112,6 @@ test_suite(
 
 cc_test(
     name = "multi_rank_block_transfer_engine_test",
-    visibility = ["//rtp_llm/test/smoke:__pkg__"],
     exec_properties = {"gpu": "L20_CU13"},
     testonly = True,
     srcs = ["MultiRankBlockTransferEngineTest.cc"],
@@ -194,7 +193,6 @@ cc_test(
 
 cc_test(
     name = "transfer_work_loop_test",
-    visibility = ["//rtp_llm/test/smoke:__pkg__"],
     testonly = True,
     srcs = ["TransferWorkLoopTest.cc"],
     copts = test_copts,
