@@ -36,6 +36,7 @@ struct DecodeEndpoint {
     // FULL holds are slot-indexed. STATE/SWA hold only this endpoint's required
     // tail pages and are never inherited from another endpoint.
     std::unordered_map<std::string, PageHolds> pages;
+    std::shared_ptr<const DecodeEndpoint> unknown_owner;
 };
 class BatchKVCacheResource {
 public:

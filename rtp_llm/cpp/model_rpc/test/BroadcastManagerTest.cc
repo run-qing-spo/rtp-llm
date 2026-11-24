@@ -458,6 +458,16 @@ TEST_F(BroadcastManagerTest, CachePartialSubmissionFailureSettlesSubmittedRankWi
     EXPECT_FALSE(result->rpcSucceeded(2));
     EXPECT_FALSE(result->success());
     EXPECT_NE(result->failureSummary().find("request_id=42"), std::string::npos);
+
+    submitted = 0;
+    auto recovery = manager.broadcastToRanks<FunctionRequestPB, FunctionResponsePB>(
+        {2, 0, 1}, FunctionRequestPB{}, 1000, rpc_call, 42, "completion_query");
+    ASSERT_NE(recovery, nullptr);
+    ASSERT_TRUE(recovery->waitDone(2000, false));
+    EXPECT_EQ(submitted, 3u);
+    EXPECT_TRUE(recovery->rpcSucceeded(0));
+    EXPECT_FALSE(recovery->rpcSucceeded(1));
+    EXPECT_TRUE(recovery->rpcSucceeded(2));
 }
 
 TEST_F(BroadcastManagerTest, Broadcast_ReturnNotNull_AllRequestsTimeout) {

@@ -1818,8 +1818,6 @@ absl::Status MtpExecutor::decodeStep(const std::list<GenerateStreamPtr>& schedul
                         frame->unknown = frame; // Protection installation failed; keep this admission alive.
                         continue;
                     }
-                    // The failed GPU drain does not prevent retiring host
-                    // admissions once native pages and unpooled tensors are held.
                     try { stream->endDecodePublicationSubmission(); }
                     catch (...) {} // A release failure is not a new writer obligation.
                 }

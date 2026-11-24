@@ -2585,8 +2585,10 @@ private:
             }
             if (track_workers) {
                 const auto& payload = response.remote_response();
-                if (!acknowledged || !RemoteTransferStatusPB_IsValid(payload.transfer_status())
-                    || payload.transfer_status() == REMOTE_TRANSFER_STATUS_UNSPECIFIED || !payload.payload_buffer_safe())
+                const auto status = payload.transfer_status();
+                const bool terminal = status == REMOTE_TRANSFER_STATUS_SUCCESS || status == REMOTE_TRANSFER_STATUS_FAILED
+                                      || status == REMOTE_TRANSFER_STATUS_TIMEOUT;
+                if (!acknowledged || !terminal || !payload.payload_buffer_safe())
                     pending.push_back(rank);
             }
         }

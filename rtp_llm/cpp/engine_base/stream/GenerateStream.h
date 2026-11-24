@@ -1085,13 +1085,12 @@ protected:
     // Separate lock/cv avoids deadlocking releaseResource with worker updates
     // that need mutex_. Shared ownership preserves the coordinator across
     // GenerateStream copies captured by async workers.
-    // Unpooled writer tensors only; ordinary KV refs retire into native FROZEN custody.
     std::shared_ptr<GenerateStream> unknown_decode_publication_;
-    bool unknown_decode_kv_frozen_{false}; // Release ordinary refs only after native custody was installed.
     void tryReleaseResourceAfterBookkeeping();
     struct AsyncBookkeepingCoordinator {
         // Copies already share the stream mutex/resources and this coordinator.
         // Keep submission claims shared too; a raw atomic member deletes the copy constructor.
+        bool                    writer_completion_unknown{false};
         std::atomic<size_t>     submissions{0};
         std::atomic<int>        count{0};
         std::atomic<bool>       defer_release{false};

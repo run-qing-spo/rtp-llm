@@ -67,10 +67,6 @@ public:
     bool captureCompletedDecode(const BatchKVCacheResource& resource, size_t computed_end, bool finished = true) const;
 
     size_t decodePublicationUnit() const;
-    // No writer last-use proof: keep ownership and charge the existing frozen
-    // pool guard rather than silently accumulating invisible request holds.
-    // False means native custody was unavailable; keep ordinary ownership.
-    bool freezeUnknownDecodeWriter(const BatchKVCacheResource& resource) const noexcept;
     // Speculative capture may defer this wait only while the original stream
     // owns the pages and its final draft-event host wait precedes promotion in
     // specUpdate. Standalone captures retain their synchronous default.

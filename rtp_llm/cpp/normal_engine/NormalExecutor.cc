@@ -224,8 +224,6 @@ absl::Status NormalExecutor::process(const std::list<GenerateStreamPtr>& schedul
                         frame->unknown = frame; // Protection installation failed; keep this admission alive.
                         continue;
                     }
-                    // KV pages have native custody; non-pool tensors retain
-                    // their stream owner. Retire only this frame's admission.
                     try { stream->endDecodePublicationSubmission(); }
                     catch (...) {} // A release failure is not a new writer obligation.
                 }

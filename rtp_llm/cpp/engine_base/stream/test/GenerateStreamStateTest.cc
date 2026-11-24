@@ -164,11 +164,11 @@ TEST_F(GenerateStreamStateTest, SubmissionAloneDefersSchedulerReleaseUntilItsHan
     }, [&] { TearDown(); cache_manager_.reset(); });
 }
 
-TEST_F(GenerateStreamStateTest, UnknownWriterReleasesOrdinaryResourcesButKeepsNativeFrozenPagesAndTensorOwner) {
+TEST_F(GenerateStreamStateTest, UnknownWriterKeepsRequestPagesAndTensorOwner) {
     autil::EnvGuard enabled("RTP_LLM_REMOTE_CACHE_ENABLE_DECODE_PUBLISH", "1");
     test::withDecodePublicationStartup([&] {
         auto config = init_config();
-        config.finalizeBlockNums(32, RuntimeConfig{}); // Preserve the native frozen-ratio guard.
+        config.finalizeBlockNums(32, RuntimeConfig{});
         for (bool cancelled : {false, true}) for (bool pending_worker : {false, true})
         for (bool externally_frozen : {false, true}) for (bool pending_submission : {false, true}) {
             SCOPED_TRACE(cancelled);
@@ -187,13 +187,10 @@ TEST_F(GenerateStreamStateTest, UnknownWriterReleasesOrdinaryResourcesButKeepsNa
             // No executor or GPU writer is submitted in this test. Only this
             // test-owned proof permits clearing its simulated UNKNOWN at scope
             // exit; no production reset/quiescence API is added.
-            auto release_frozen = pool->prepareFrozenReferenceRelease(blocks);
-            auto mock_quiescence = std::shared_ptr<void>(nullptr, [stream, pool, blocks, release_frozen](void*) {
-                bool all_frozen = true;
-                for (auto block : blocks) all_frozen = all_frozen && pool->isFrozen(block);
-                if (all_frozen) release_frozen(); // Preserve assertion diagnostics if freezing regresses.
+            auto mock_quiescence = std::shared_ptr<void>(nullptr, [stream](void*) {
                 {
                     std::lock_guard<std::mutex> lock(*stream->mutex_);
+                    stream->async_bookkeeping_->writer_completion_unknown = false;
                     stream->unknown_decode_publication_.reset();
                 }
                 stream->releaseResource();
@@ -227,30 +224,29 @@ TEST_F(GenerateStreamStateTest, UnknownWriterReleasesOrdinaryResourcesButKeepsNa
             if (cancelled) {
                 EXPECT_EQ(output.status().ToString(), "original cancellation");
             }
-            worker.reset(); // Native FROZEN must protect pages after ordinary host users retire.
+            worker.reset();
             ASSERT_FALSE(stream->hasPendingAsyncBookkeeping());
             EXPECT_EQ(stream->moveToNext(), StreamState::FINISHED);
-            EXPECT_EQ(resource.isResourceReleased(), !pending_submission);
-            EXPECT_EQ(stream->isDeferredReleasePending(), pending_submission);
+            EXPECT_FALSE(resource.isResourceReleased());
+            EXPECT_TRUE(stream->isDeferredReleasePending());
             stream->releaseResource();
-            EXPECT_EQ(resource.isResourceReleased(), !pending_submission);
             submission.reset();
-            EXPECT_TRUE(resource.isResourceReleased());
+            EXPECT_FALSE(resource.isResourceReleased());
             EXPECT_FALSE(stream->beginDecodePublicationSubmission());
             EXPECT_EQ(stream->unknown_decode_publication_.get(), stream.get());
-            EXPECT_TRUE(resource.kvCache().blocks(0, "default").empty());
-            EXPECT_EQ(pool->referencedBlocksNum(DeviceBlockRefType::REQUEST), 0u);
+            EXPECT_EQ(resource.kvCache().blocks(0, "default"), blocks);
+            EXPECT_EQ(pool->referencedBlocksNum(DeviceBlockRefType::REQUEST), blocks.size());
             EXPECT_EQ(pool->referencedBlocksNum(DeviceBlockRefType::REMOTE_CONNECTOR), 0u);
             for (auto block : blocks) {
                 EXPECT_TRUE(pool->isAllocated(block));
-                EXPECT_EQ(pool->refCount(block), 1u); // Aggregate native tree hold, not an ordinary pin.
+                EXPECT_EQ(pool->treeRefCount(block), externally_frozen ? 1u : 0u);
             }
-            stream->retainUnknownDecodePublication(stream); // Duplicate notification preserves the first error/hold.
+            stream->retainUnknownDecodePublication(stream);
             EXPECT_EQ(stream->statusInfo().code(), expected);
-            external_recovery.reset(); // Another operation's recovery must not remove this writer's protection.
+            external_recovery.reset();
             for (auto block : blocks) {
-                EXPECT_TRUE(pool->isFrozen(block));
-                EXPECT_EQ(pool->treeRefCount(block), 1u);
+                EXPECT_FALSE(pool->isFrozen(block));
+                EXPECT_EQ(pool->refCount(block), 1u);
             }
             mock_quiescence.reset();
             EXPECT_TRUE(resource.isResourceReleased());
@@ -263,6 +259,7 @@ TEST_F(GenerateStreamStateTest, UnknownWriterReleasesOrdinaryResourcesButKeepsNa
         auto fake = createStream({1, 2}, false, RoleType::DECODE);
         fake->streamCacheResource().fakeInitKVBlock(2);
         auto mock_quiescence = std::shared_ptr<void>(nullptr, [fake](void*) {
+            fake->async_bookkeeping_->writer_completion_unknown = false;
             fake->unknown_decode_publication_.reset(); // No real writer exists in this test.
             fake->releaseResource();
         });
@@ -273,7 +270,7 @@ TEST_F(GenerateStreamStateTest, UnknownWriterReleasesOrdinaryResourcesButKeepsNa
     }, [&] { TearDown(); cache_manager_.reset(); });
 }
 
-TEST_F(GenerateStreamStateTest, UnknownWriterFreezesRetainedEndpointPagesOutsideTheCurrentTableOnce) {
+TEST_F(GenerateStreamStateTest, UnknownWriterKeepsEndpointPinsOutsideTheCurrentTable) {
     autil::EnvGuard enabled("RTP_LLM_REMOTE_CACHE_ENABLE_DECODE_PUBLISH", "1");
     test::withDecodePublicationStartup([&] {
         auto config = init_config();
@@ -305,33 +302,28 @@ TEST_F(GenerateStreamStateTest, UnknownWriterFreezesRetainedEndpointPagesOutside
         stream->kvCacheMutable().decode_round_endpoints.push_back(endpoint);
         endpoint.reset();
         extra_request.reset(); // The out-of-table allocation now has only its endpoint pin.
-        std::vector<std::function<void()>> releases;
-        for (auto block : protected_blocks)
-            releases.push_back(pool->prepareFrozenReferenceRelease({block}));
-        auto mock_quiescence = std::shared_ptr<void>(nullptr, [stream, pool, protected_blocks, releases](void*) {
-            // No real writer was submitted. Recover only this test's native holds.
-            for (size_t i = 0; i < protected_blocks.size(); ++i)
-                if (pool->isAllocated(protected_blocks[i]) && pool->isFrozen(protected_blocks[i])) releases[i]();
+        auto mock_quiescence = std::shared_ptr<void>(nullptr, [stream](void*) {
+            stream->async_bookkeeping_->writer_completion_unknown = false;
             stream->unknown_decode_publication_.reset();
             stream->releaseResource();
         });
         ASSERT_TRUE(stream->beginDecodePublicationSubmission());
         auto submission = std::shared_ptr<void>(nullptr, [stream](void*) { stream->endDecodePublicationSubmission(); });
+        auto stream_copy = std::make_shared<NormalGenerateStream>(*stream);
         stream->retainUnknownDecodePublication(stream);
         stream->releaseResource();
         EXPECT_FALSE(resource.isResourceReleased());
         submission.reset();
-        EXPECT_TRUE(resource.isResourceReleased());
-        EXPECT_EQ(pool->referencedBlocksNum(DeviceBlockRefType::REQUEST), 0u);
-        EXPECT_EQ(pool->referencedBlocksNum(DeviceBlockRefType::REMOTE_CONNECTOR), 0u);
+        stream_copy.reset();
+        EXPECT_FALSE(resource.isResourceReleased());
+        EXPECT_EQ(pool->referencedBlocksNum(DeviceBlockRefType::REQUEST), current.size());
+        EXPECT_EQ(pool->referencedBlocksNum(DeviceBlockRefType::REMOTE_CONNECTOR), protected_blocks.size());
         for (auto block : protected_blocks) {
             EXPECT_TRUE(pool->isAllocated(block));
-            EXPECT_TRUE(pool->isFrozen(block));
-            EXPECT_EQ(pool->treeRefCount(block), 1u); // Current + repeated endpoint references deduplicate.
-            EXPECT_EQ(pool->refCount(block), 1u);
+            EXPECT_FALSE(pool->isFrozen(block));
         }
         stream->retainUnknownDecodePublication(stream);
-        for (auto block : protected_blocks) EXPECT_EQ(pool->treeRefCount(block), 1u);
+        EXPECT_EQ(pool->referencedBlocksNum(BlockTreeRefType::FROZEN), 0u);
         EXPECT_FALSE(stream->beginDecodePublicationSubmission());
         EXPECT_EQ(stream->unknown_decode_publication_.get(), stream.get());
         mock_quiescence.reset();
@@ -339,7 +331,7 @@ TEST_F(GenerateStreamStateTest, UnknownWriterFreezesRetainedEndpointPagesOutside
     }, [&] { TearDown(); cache_manager_.reset(); });
 }
 
-TEST_F(GenerateStreamStateTest, UnknownWriterWithoutNativeCustodyKeepsOrdinaryResources) {
+TEST_F(GenerateStreamStateTest, UnknownWriterKeepsPagesWithoutAnAllocatorOwner) {
     autil::EnvGuard enabled("RTP_LLM_REMOTE_CACHE_ENABLE_DECODE_PUBLISH", "1");
     test::withDecodePublicationStartup([&] {
         for (bool missing_manager : {false, true}) {
@@ -355,6 +347,7 @@ TEST_F(GenerateStreamStateTest, UnknownWriterWithoutNativeCustodyKeepsOrdinaryRe
                 // No real writer was submitted; restore this test's altered
                 // context before releasing its simulated UNKNOWN ordinary refs.
                 resource.resource_context_.cache_manager = manager;
+                stream->async_bookkeeping_->writer_completion_unknown = false;
                 stream->unknown_decode_publication_.reset();
                 stream->releaseResource();
             });
@@ -370,7 +363,6 @@ TEST_F(GenerateStreamStateTest, UnknownWriterWithoutNativeCustodyKeepsOrdinaryRe
                     manager->cacheConfig(), false, nullptr, KVCacheConfig{}, non_owner);
             }
             stream->retainUnknownDecodePublication(stream);
-            EXPECT_FALSE(stream->unknown_decode_kv_frozen_);
             stream->releaseResource();
             stream->tryReleaseResourceAfterBookkeeping();
             EXPECT_FALSE(resource.isResourceReleased());

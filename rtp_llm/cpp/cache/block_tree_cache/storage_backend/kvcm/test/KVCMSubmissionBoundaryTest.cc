@@ -128,10 +128,9 @@ protected:
         std::atomic<int> starts{0}, saves{0}, closes{0};
         std::atomic<bool> bad_close{false};
         size_t refs = env.device_pool->refCount(env.block_id);
-        const bool is_decode;
 
         Fixture(bool decode, std::shared_ptr<BoundaryBroadcastManager> broadcast = {},
-                size_t workers = 1, size_t queue_size = 8): is_decode(decode) {
+                size_t workers = 1, size_t queue_size = 8) {
             EXPECT_CALL(*client, initForPools(_, _, _, _)).WillOnce(Return(true));
             EXPECT_CALL(*client, shutdown()).Times(1);
             EXPECT_CALL(*client, getWriteLocation(_, _, _, _, _, _, _)).WillRepeatedly(Invoke(
@@ -195,7 +194,7 @@ protected:
         bool submit(StorageRequest request) {
             return backend->write(backend->prepareWrite(std::move(request)));
         }
-        void expectSettled(bool retained, bool source_unknown) {
+        void expectSettled(bool retained) {
             {
                 std::unique_lock<std::mutex> lock(backend->lifecycle_mutex_);
                 ASSERT_TRUE(backend->lifecycle_cv_.wait_for(
@@ -204,18 +203,13 @@ protected:
             EXPECT_EQ(starts.load(), 1);
             EXPECT_EQ(closes.load(), retained ? 0 : 1);
             EXPECT_FALSE(bad_close.load());
-            // P's NO_LOCAL_TARGETS rule is unchanged. D replaces its ordinary
-            // connector pins with one native frozen reference on UNKNOWN.
-            const bool frozen = source_unknown && is_decode;
-            EXPECT_EQ(env.device_pool->isFrozen(env.block_id), frozen);
-            EXPECT_EQ(env.device_pool->treeRefCount(env.block_id), frozen ? 1u : 0u);
-            // The first tree reference contributes one aggregate refCount;
-            // it is not a surviving request/REMOTE_CONNECTOR pin.
-            EXPECT_EQ(env.device_pool->refCount(env.block_id), refs + (frozen ? 1u : 0u));
+            EXPECT_FALSE(env.device_pool->isFrozen(env.block_id));
+            EXPECT_EQ(env.device_pool->treeRefCount(env.block_id), 0u);
+            EXPECT_EQ(env.device_pool->refCount(env.block_id), refs);
             EXPECT_EQ(env.device_pool->referencedBlocksNum(DeviceBlockRefType::REMOTE_CONNECTOR), 0u);
             std::lock_guard<std::mutex> lock(backend->quarantine_mutex_);
             EXPECT_FALSE(backend->protected_quarantine_);
-            EXPECT_EQ(backend->quarantined_task_count_, source_unknown ? 1u : 0u);
+            EXPECT_EQ(backend->quarantined_task_count_, 0u);
         }
     };
 
@@ -249,7 +243,7 @@ protected:
                 std::this_thread::sleep_until(deadline + std::chrono::milliseconds(1));
             };
             ASSERT_TRUE(s.submit(std::move(request)));
-            ASSERT_NO_FATAL_FAILURE(s.expectSettled(partial, partial));
+            ASSERT_NO_FATAL_FAILURE(s.expectSettled(partial));
             ASSERT_NE(broadcast->observed, nullptr);
             EXPECT_TRUE(broadcast->observed->done());
             EXPECT_FALSE(broadcast->observed->success());
@@ -345,7 +339,7 @@ protected:
         unblock.run();
         // The mixed case completes peer0's SDK call; peer1 never enters I/O.
         // Strict all-peer terminal proof permits zero-mask close, not commit.
-        ASSERT_NO_FATAL_FAILURE(s.expectSettled(/*retained=*/false, /*source_unknown=*/false));
+        ASSERT_NO_FATAL_FAILURE(s.expectSettled(false));
         EXPECT_EQ(checks->load(), mixed ? 2 : 1);
         EXPECT_EQ(s.saves.load(), mixed ? 1 : 0);
         EXPECT_EQ(s.env.device_pool->referencedBlocksNum(BlockTreeRefType::FROZEN), 0u);
@@ -509,7 +503,7 @@ TEST_F(KVCMSubmissionBoundaryTest, WrapperPreflightClosesUnstartedOrStrictlySett
             ASSERT_TRUE(s.submit(s.request(true)));
             // Any earlier accepted peer completed successfully; every rejected
             // peer proves NOT_STARTED, including a pre-handoff exception.
-            ASSERT_NO_FATAL_FAILURE(s.expectSettled(/*retained=*/false, /*source_unknown=*/false));
+            ASSERT_NO_FATAL_FAILURE(s.expectSettled(false));
             EXPECT_EQ(s.saves.load(), partial ? 1 : 0);
             EXPECT_EQ(s.env.device_pool->referencedBlocksNum(BlockTreeRefType::FROZEN), 0u);
         }
@@ -602,7 +596,7 @@ TEST_F(KVCMSubmissionBoundaryTest, WorkerPreSdkExceptionStillWaitsForOtherPeerAn
         // Test-only injection at the worker pre-SDK boundary exercises the
         // catch/terminal path, not real GPU OOM.
         ASSERT_TRUE(s.submit(s.request(true)));
-        ASSERT_NO_FATAL_FAILURE(s.expectSettled(false, false));
+        ASSERT_NO_FATAL_FAILURE(s.expectSettled(false));
         EXPECT_EQ(s.saves.load(), 1); // The other peer runs and finishes normally.
         EXPECT_EQ(s.closes.load(), 1);
         EXPECT_EQ(s.env.device_pool->referencedBlocksNum(BlockTreeRefType::FROZEN), 0u);
@@ -699,7 +693,7 @@ TEST_F(KVCMSubmissionBoundaryTest, ParallelPeersHoldSourcesAndPublishOnceAfterBo
         EXPECT_EQ(s.closes.load(), 0);
         EXPECT_GT(s.env.device_pool->refCount(s.env.block_id), s.refs);
         unblock.run();
-        ASSERT_NO_FATAL_FAILURE(s.expectSettled(false, false));
+        ASSERT_NO_FATAL_FAILURE(s.expectSettled(false));
         EXPECT_EQ(s.saves.load(), 2);
         EXPECT_EQ(s.env.device_pool->referencedBlocksNum(BlockTreeRefType::FROZEN), 0u);
     });
@@ -756,13 +750,13 @@ TEST_F(KVCMSubmissionBoundaryTest, LocalPeerSafeFailureClosesOnlyAfterAllPeersSe
                 return std::make_pair(true, kv_cache_manager::UriStrVec{"pace://bad:0", "pace://bad:1"});
             }));
         ASSERT_TRUE(s.submit(s.request(true)));
-        ASSERT_NO_FATAL_FAILURE(s.expectSettled(false, false));
+        ASSERT_NO_FATAL_FAILURE(s.expectSettled(false));
         EXPECT_EQ(s.saves.load(), 2);
         EXPECT_EQ(s.env.device_pool->referencedBlocksNum(BlockTreeRefType::FROZEN), 0u);
     });
 }
 
-TEST_F(KVCMSubmissionBoundaryTest, LocalPeerUnknownFreezesSourceWithoutFinishAbortOrBackendStop) {
+TEST_F(KVCMSubmissionBoundaryTest, LocalPeerUnknownReleasesSourceAndKeepsSessionOpen) {
     autil::EnvGuard feature("RTP_LLM_REMOTE_CACHE_ENABLE_DECODE_PUBLISH", "1");
     ::rtp_llm::test::withDecodePublicationStartup([&] {
         Fixture s(true);
@@ -772,9 +766,9 @@ TEST_F(KVCMSubmissionBoundaryTest, LocalPeerUnknownFreezesSourceWithoutFinishAbo
                 return std::make_pair(false, kv_cache_manager::UriStrVec{}); // Explicitly no safety proof.
             }));
         ASSERT_TRUE(s.submit(s.request(true)));
-        ASSERT_NO_FATAL_FAILURE(s.expectSettled(true, true));
+        ASSERT_NO_FATAL_FAILURE(s.expectSettled(true));
         EXPECT_EQ(s.saves.load(), 2);
-        EXPECT_EQ(s.env.device_pool->referencedBlocksNum(BlockTreeRefType::FROZEN), 1u);
+        EXPECT_EQ(s.env.device_pool->referencedBlocksNum(BlockTreeRefType::FROZEN), 0u);
         EXPECT_EQ(s.backend->impl_->client_wrapper_, s.client);
         EXPECT_FALSE(s.backend->impl_->completion_stopped_.load());
         // Source/metadata lifetime is checked by expectSettled above. Actual
@@ -782,7 +776,7 @@ TEST_F(KVCMSubmissionBoundaryTest, LocalPeerUnknownFreezesSourceWithoutFinishAbo
     });
 }
 
-TEST_F(KVCMSubmissionBoundaryTest, FrozenUnknownSourceDoesNotStopAnUnrelatedPublication) {
+TEST_F(KVCMSubmissionBoundaryTest, UnknownWriteDoesNotStopAnUnrelatedPublication) {
     autil::EnvGuard feature("RTP_LLM_REMOTE_CACHE_ENABLE_DECODE_PUBLISH", "1");
     test::withDecodePublicationStartup([&] {
         Fixture s(true);
@@ -801,7 +795,7 @@ TEST_F(KVCMSubmissionBoundaryTest, FrozenUnknownSourceDoesNotStopAnUnrelatedPubl
             }));
         s.client->save_status = kv_cache_manager::ClientErrorCode::ER_SDKWRITE_ERROR;
         ASSERT_TRUE(s.submit(s.request(true)));
-        ASSERT_NO_FATAL_FAILURE(s.expectSettled(/*retained=*/true, /*source_unknown=*/true));
+        ASSERT_NO_FATAL_FAILURE(s.expectSettled(true));
 
         const auto other = s.env.device_pool->malloc();
         ASSERT_TRUE(other);
@@ -809,7 +803,7 @@ TEST_F(KVCMSubmissionBoundaryTest, FrozenUnknownSourceDoesNotStopAnUnrelatedPubl
         auto release_other = std::shared_ptr<void>(nullptr, [pool = s.env.device_pool, block = *other](void*) {
             pool->decRef(block);
         });
-        ASSERT_NE(*other, s.env.block_id); // Native frozen capacity cannot be recycled.
+        ASSERT_NE(*other, s.env.block_id);
         auto next = s.request(true);
         next.keys = std::make_shared<CacheKeysType>(CacheKeysType{102});
         next.handles.front().front().block = *other;
@@ -839,7 +833,7 @@ TEST_F(KVCMSubmissionBoundaryTest, FrozenUnknownSourceDoesNotStopAnUnrelatedPubl
         EXPECT_EQ(s.starts.load(), 2);
         EXPECT_EQ(s.saves.load(), 2); // Both CP peers really reached the successful SDK mock.
         EXPECT_EQ(s.closes.load(), 1);
-        EXPECT_TRUE(s.env.device_pool->isFrozen(s.env.block_id));
+        EXPECT_FALSE(s.env.device_pool->isFrozen(s.env.block_id));
         EXPECT_FALSE(s.env.device_pool->isFrozen(*other));
         EXPECT_EQ(s.env.device_pool->referencedBlocksNum(DeviceBlockRefType::REMOTE_CONNECTOR), 0u);
     });
@@ -876,10 +870,9 @@ TEST_F(KVCMSubmissionBoundaryTest, DecodeSdkFailuresCloseOnlyStrictAllPeerSafeRe
                     return false;
                 };
                 ASSERT_TRUE(s.submit(s.request(true)));
-                ASSERT_NO_FATAL_FAILURE(s.expectSettled(/*retained=*/!source_safe,
-                                                         /*source_unknown=*/!source_safe));
+                ASSERT_NO_FATAL_FAILURE(s.expectSettled(!source_safe));
                 EXPECT_EQ(s.saves.load(), 2);
-                EXPECT_EQ(s.env.device_pool->referencedBlocksNum(BlockTreeRefType::FROZEN), source_safe ? 0u : 1u);
+                EXPECT_EQ(s.env.device_pool->referencedBlocksNum(BlockTreeRefType::FROZEN), 0u);
                 // One unsafe peer wins in either order. Explicit SAFE failures
                 // (including SAFE timeout) close exactly once with zero mask.
                 EXPECT_EQ(s.closes.load(), source_safe ? 1 : 0);
@@ -888,7 +881,7 @@ TEST_F(KVCMSubmissionBoundaryTest, DecodeSdkFailuresCloseOnlyStrictAllPeerSafeRe
     });
 }
 
-TEST_F(KVCMSubmissionBoundaryTest, DecodeThrownSdkFailureKeepsSessionAndNativeFrozenSource) {
+TEST_F(KVCMSubmissionBoundaryTest, DecodeThrownSdkFailureKeepsSessionAndReleasesSource) {
     autil::EnvGuard feature("RTP_LLM_REMOTE_CACHE_ENABLE_DECODE_PUBLISH", "1");
     test::withDecodePublicationStartup([&] {
         Fixture s(true);
@@ -899,7 +892,7 @@ TEST_F(KVCMSubmissionBoundaryTest, DecodeThrownSdkFailureKeepsSessionAndNativeFr
                 throw std::runtime_error("SDK may have submitted before throwing");
             }));
         ASSERT_TRUE(s.submit(s.request(true)));
-        ASSERT_NO_FATAL_FAILURE(s.expectSettled(true, true));
+        ASSERT_NO_FATAL_FAILURE(s.expectSettled(true));
         EXPECT_EQ(s.saves.load(), 2);
         EXPECT_EQ(s.closes.load(), 0);
     });
@@ -957,7 +950,7 @@ TEST_F(KVCMSubmissionBoundaryTest, CompletedDecodePayloadCannotAbortAnUnacknowle
             return kvcm::ClientWrapper::FinishWriteResult::UNKNOWN;
         };
         ASSERT_TRUE(s.submit(s.request(true)));
-        ASSERT_NO_FATAL_FAILURE(s.expectSettled(true, false));
+        ASSERT_NO_FATAL_FAILURE(s.expectSettled(true));
         EXPECT_EQ(s.saves.load(), 2);
         EXPECT_EQ(finishes.load(), 1); // No retry/abort even though all payload is safe.
         EXPECT_EQ(s.closes.load(), 0);

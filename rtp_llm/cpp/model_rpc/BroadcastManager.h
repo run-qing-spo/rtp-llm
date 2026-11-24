@@ -425,7 +425,7 @@ private:
             const auto target_rank = ranks ? ranks->at(rank) : static_cast<size_t>(rank);
             const auto& addr = worker_addrs_.at(target_rank);
             auto        conn_status = rpc_pool_->getConnection(addr);
-            if (!conn_status.ok()) {
+            if (!conn_status.ok() && !ranks) {
                 RTP_LLM_LOG_WARNING("broadcast: getConnection failed rank=%d addr=%s error=%s %s",
                                     rank,
                                     addr.c_str(),
@@ -436,7 +436,11 @@ private:
 
             contexts[rank]      = std::make_shared<CtxT>();
             auto& ctx           = contexts.at(rank);
-            ctx->stub           = conn_status.value().stub;
+            if (conn_status.ok()) {
+                ctx->stub = conn_status.value().stub;
+            } else {
+                ctx->status = grpc::Status(grpc::StatusCode::UNAVAILABLE, "broadcast connection unavailable");
+            }
             ctx->request        = request_at(rank);
             ctx->target_rank    = target_rank;
             ctx->server_addr    = addr;
@@ -446,10 +450,19 @@ private:
         }
 
         auto result = std::make_shared<ResultT>(contexts, request_id, std::move(direction), connect_failure_reporter_);
-        for (int rank = 0; rank < worker_size; ++rank) {
+        std::vector<std::shared_ptr<CompletionTag<ResultT>>> tags;
+        tags.reserve(worker_size);
+        for (size_t rank = 0; rank < worker_size; ++rank) {
+            tags.push_back(std::make_shared<CompletionTag<ResultT>>(result, rank));
+        }
+        for (size_t rank = 0; rank < worker_size; ++rank) {
             auto& ctx = result->worker_contexts_.at(rank);
             try {
-                auto tag = std::make_shared<CompletionTag<ResultT>>(result, rank);
+                if (!ctx->stub) {
+                    result->finishRank(rank, true, false);
+                    continue;
+                }
+                auto& tag = tags[rank];
                 // Under the RpcCall contract above, callback failure precedes
                 // any CQ operation, so the prepared tag can be released.
                 auto reader = rpc_call(ctx->stub, ctx->client_context, ctx->request, completion_queue_.get());
@@ -460,31 +473,26 @@ private:
                 // this anchor until a real CQ completion.
                 tag->anchor = tag;
                 reader->Finish(&ctx->response, &ctx->status, tag.get());
+                continue;
             } catch (const std::exception& error) {
                 if (fatal_on_error) {
-                    RTP_LLM_FAIL("broadcast rpc dispatch failed, rank=%d err=%s %s", rank, error.what(), rpc_tag.c_str());
+                    RTP_LLM_FAIL("broadcast rpc dispatch failed, rank=%zu err=%s %s", rank, error.what(), rpc_tag.c_str());
                 }
-                for (size_t pending = rank; pending < worker_size; ++pending) {
-                    try {
-                        result->finishRank(pending, false, false);
-                    } catch (...) {
-                        result->finishRankWithoutSummary(pending);
-                    }
-                }
-                break;
             } catch (...) {
                 if (fatal_on_error) {
-                    RTP_LLM_FAIL("broadcast rpc dispatch failed, rank=%d unknown error %s", rank, rpc_tag.c_str());
+                    RTP_LLM_FAIL("broadcast rpc dispatch failed, rank=%zu unknown error %s", rank, rpc_tag.c_str());
                 }
-                for (size_t pending = rank; pending < worker_size; ++pending) {
-                    try {
-                        result->finishRank(pending, false, false);
-                    } catch (...) {
-                        result->finishRankWithoutSummary(pending);
-                    }
-                }
-                break;
             }
+            const size_t end = ranks ? rank + 1 : worker_size;
+            for (size_t pending = rank; pending < end; ++pending) {
+                try {
+                    result->finishRank(pending, false, false);
+                } catch (...) {
+                    result->finishRankWithoutSummary(pending);
+                }
+            }
+            if (!ranks)
+                break;
         }
 
         return result;

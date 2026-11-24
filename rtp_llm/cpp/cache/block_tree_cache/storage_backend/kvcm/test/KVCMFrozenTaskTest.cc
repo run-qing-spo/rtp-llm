@@ -31,18 +31,22 @@ TEST(KVCMFrozenTaskTest, TargetsExcludeLocalPrefixFilteredLinearStateAndUnsentTa
     request.keys = std::make_shared<const CacheKeysType>(CacheKeysType{101, 102, 103});
     request.handles.resize(3);
     std::vector<std::string> trace{"block_tree_read_1"};
-    size_t tags = 0;
-    EXPECT_CALL(*client, loadKvCachesForTagWithStatus(_, _, _, _)).Times(4)
+    EXPECT_CALL(*client, loadKvCachesForTag(_, _, _, _)).Times(2)
         .WillRepeatedly(Invoke([&](const auto&, const auto&, auto&, const auto&) {
             EXPECT_EQ(backend.reclaimer->localState(trace.front()), BlockTreeReclaimer::State::RUNNING);
-            client->load_status = ++tags == 4 ? kv_cache_manager::ER_SDK_TIMEOUT : kv_cache_manager::ER_OK;
-            return *client->load_status;
+            return true;
         }));
     EXPECT_TRUE(readResult(*backend.backend, request, matched.match_meta).ok());
     ASSERT_TRUE(waitForBackendOperationsForTest(*backend.backend));
     EXPECT_EQ(backend.reclaimer->localState(trace.front()), BlockTreeReclaimer::State::BUFFER_SAFE);
     EXPECT_TRUE(backend.reclaimer->frozen_.empty());
     trace.front() = "block_tree_read_2";
+    EXPECT_CALL(*client, loadKvCachesForTag(_, _, _, _))
+        .WillOnce(Invoke([&](const auto&, const auto&, auto&, const auto&) {
+            EXPECT_EQ(backend.reclaimer->localState(trace.front()), BlockTreeReclaimer::State::RUNNING);
+            client->load_status = kv_cache_manager::ER_SDK_TIMEOUT;
+            return true;
+        }));
     std::promise<ErrorInfo> done;
     auto completed = done.get_future();
     backend->read(std::move(request), std::move(matched.match_meta), [&](ErrorInfo error) {

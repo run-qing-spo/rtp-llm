@@ -256,7 +256,7 @@ void GenerateStream::releaseResource() {
             });
         }
         std::lock_guard<std::mutex> lock(*mutex_);
-        if (async_bookkeeping_->submissions || (unknown_decode_publication_ && !unknown_decode_kv_frozen_)) {
+        if (async_bookkeeping_->submissions || async_bookkeeping_->writer_completion_unknown) {
             markDeferredRelease();
             return;
         }
@@ -272,7 +272,7 @@ void GenerateStream::releaseResource() {
 
 bool GenerateStream::hasOutstandingResourceUseWithoutLock() const {
     return hasPendingAsyncBookkeeping() || async_bookkeeping_->submissions
-        || (unknown_decode_publication_ && !unknown_decode_kv_frozen_);
+        || async_bookkeeping_->writer_completion_unknown;
 }
 
 void GenerateStream::tryReleaseResourceAfterBookkeeping() {
@@ -300,7 +300,7 @@ bool GenerateStream::mayCrossDecodePublicationBoundary(size_t unit, size_t advan
 bool GenerateStream::beginDecodePublicationSubmission() {
     std::lock_guard<std::mutex> lock(*mutex_);
     if (!stream_cache_resource_ || stream_cache_resource_->isResourceReleased() || isFinished()
-        || hasErrorWithoutLock() || unknown_decode_publication_) return false;
+        || hasErrorWithoutLock() || async_bookkeeping_->writer_completion_unknown) return false;
     ++async_bookkeeping_->submissions;
     {
         std::lock_guard<std::mutex> wait_lock(async_bookkeeping_->mu);
@@ -313,14 +313,8 @@ void GenerateStream::retainUnknownDecodePublication(const std::shared_ptr<Genera
     std::lock_guard<std::mutex> lock(*mutex_);
     RTP_LLM_CHECK(owner.get() == this);
     const bool first_unknown = !unknown_decode_publication_;
-    if (first_unknown) {
-        const auto& manager = stream_cache_resource_->resourceContext().cache_manager;
-        unknown_decode_kv_frozen_ = manager && manager->freezeUnknownDecodeWriter(stream_cache_resource_->kvCache());
-    }
-    // Native FROZEN holds now protect KV/endpoint allocations independently of
-    // ordinary request refs. Keep this owner only for unpooled device tensors
-    // and pinned host snapshots that an unproven writer may still access.
     unknown_decode_publication_ = owner;
+    async_bookkeeping_->writer_completion_unknown = true;
     // Set the code before emitting the bitmask event, so reporting does not
     // construct a diagnostic string on this destructor/error path. Keep the
     // first error (including cancellation) and the actual UNKNOWN owner.
@@ -328,7 +322,7 @@ void GenerateStream::retainUnknownDecodePublication(const std::shared_ptr<Genera
         generate_status_->error_info.setErrorCode(ErrorCode::EXECUTION_EXCEPTION);
     try {
         if (first_unknown)
-            RTP_LLM_LOG_ERROR("Decode writer completion UNKNOWN; KV pages frozen, unpooled tensors retained");
+            RTP_LLM_LOG_ERROR("Decode writer completion UNKNOWN; retaining stream resources");
         reportEventWithoutLock(StreamEvents::Error, ErrorCode::EXECUTION_EXCEPTION, "");
     } catch (...) {} // Notification failure cannot undo installed physical/tensor protection.
 }
