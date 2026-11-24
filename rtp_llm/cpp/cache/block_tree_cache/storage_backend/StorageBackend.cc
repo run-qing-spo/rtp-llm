@@ -777,7 +777,6 @@ bool StorageBackend::write(StorageWriteTask task) {
                 std::optional<StorageQuarantineReason> quarantine_reason;
                 auto local_target_protection = StorageTargetProtection::FREEZE_REQUEST_BLOCKS;
                 if (run) {
-                    const bool can_quarantine = !before_io && quarantineUnknownWrite();
                     try {
                         std::optional<TransferStageTimer> complete;
                         if (io_kind == AsyncProfileKind::Lifecycle)
@@ -789,14 +788,14 @@ bool StorageBackend::write(StorageWriteTask task) {
                             result(on_worker);
                         success = !state->request.transfer_task->expired();
                     } catch (const StorageOperationTimeout& error) {
-                        if (can_quarantine) {
+                        if (!before_io) {
                             quarantine_reason       = error.reason();
                             local_target_protection = error.localTargetProtection();
                             quarantineTask(state, /*is_write=*/true, *quarantine_reason, local_target_protection);
                         }
                         RTP_LLM_LOG_WARNING("StorageBackend write timed out: %s", error.what());
                     } catch (const StorageOperationCompletionUnknown& error) {
-                        if (can_quarantine) {
+                        if (!before_io) {
                             quarantine_reason       = error.reason();
                             local_target_protection = error.localTargetProtection();
                             quarantineTask(state, /*is_write=*/true, *quarantine_reason, local_target_protection);
@@ -805,13 +804,13 @@ bool StorageBackend::write(StorageWriteTask task) {
                     } catch (const StorageOperationBufferSafeFailure& error) {
                         RTP_LLM_LOG_WARNING("StorageBackend payload-safe write failure: %s", error.what());
                     } catch (const std::exception& error) {
-                        if (can_quarantine && (state->completion_protected || state->request.decode_completion)) {
+                        if (!before_io && (state->completion_protected || state->request.decode_completion)) {
                             quarantine_reason = StorageQuarantineReason::INVALID_RESPONSE;
                             quarantineTask(state, /*is_write=*/true, *quarantine_reason);
                         }
                         RTP_LLM_LOG_ERROR("StorageBackend write failed: %s", error.what());
                     } catch (...) {
-                        if (can_quarantine && (state->completion_protected || state->request.decode_completion)) {
+                        if (!before_io && (state->completion_protected || state->request.decode_completion)) {
                             quarantine_reason = StorageQuarantineReason::INVALID_RESPONSE;
                             quarantineTask(state, /*is_write=*/true, *quarantine_reason);
                         }

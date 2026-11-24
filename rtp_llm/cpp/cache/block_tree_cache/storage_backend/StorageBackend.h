@@ -283,7 +283,6 @@ protected:
     virtual void               onQuarantined(bool, StorageQuarantineReason, size_t) noexcept {}
     virtual void               onQuarantineChanged(uint64_t, size_t, size_t,
                                                    const StorageQuarantineBreakdown&) noexcept {}
-    virtual bool quarantineUnknownWrite() const noexcept { return true; }
     virtual bool protectUnknownCompletion() const noexcept { return false; }
     virtual std::shared_ptr<void> completionResourceOwner() const { return {}; }
     virtual bool hasUnresolvedExternalIo() const noexcept { return false; }

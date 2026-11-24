@@ -25,7 +25,6 @@
 #include "rtp_llm/cpp/cache/CoordinatorCacheManager.h"
 #include "rtp_llm/cpp/cache/PrefillCacheHitMetricsReporter.h"
 #include "rtp_llm/cpp/cache/block_tree_cache/BlockTreeCacheFactory.h"
-#include "rtp_llm/cpp/cache/block_tree_cache/BlockTreeReclaimer.h"
 #ifdef RTP_LLM_USE_REMOTE_KV_CACHE
 #include "rtp_llm/cpp/cache/block_tree_cache/storage_backend/kvcm/KVCMStorageBackend.h"
 #include "rtp_llm/cpp/utils/RemoteCacheConfig.h"
@@ -53,27 +52,19 @@ public:
 
 namespace {
 
-void collectDecodePage(std::vector<TransferTargetBlock>& targets, const DeviceBlockPoolPtr& pool, BlockIdxType block) {
-    if (pool && pool->isAllocated(block))
-        targets.push_back({pool, block});
+using DecodeFrozenPages = std::unordered_map<DeviceBlockPool*, std::unordered_set<BlockIdxType>>;
+
+void freezeDecodePage(DecodeFrozenPages& frozen, const DeviceBlockPoolPtr& pool, BlockIdxType block) noexcept {
+    if (pool && pool->isAllocated(block) && frozen[pool.get()].insert(block).second)
+        pool->freezeBlock(block);
 }
 
-void collectDecodeEndpointPages(std::vector<TransferTargetBlock>& targets, const std::shared_ptr<const DecodeEndpoint>& endpoint) {
-    if (endpoint)
-        for (const auto& [tag, pages] : endpoint->pages)
-            for (const auto& page : pages)
-                if (page && page->pin)
-                    collectDecodePage(targets, page->pool, page->block);
-}
-
-void freezeDecodeWriterPages(BlockTreeReclaimer& reclaimer, std::vector<TransferTargetBlock> targets) noexcept {
-    if (targets.empty())
-        return;
-    static std::atomic<uint64_t> sequence{0};
-    TransferCompletionKey trace{"decode-writer-" + std::to_string(sequence.fetch_add(1))};
-    RTP_LLM_CHECK(reclaimer.registerOnWorkerTaskWithTraceID(trace.trace_id));
-    RTP_LLM_CHECK(reclaimer.registerTask(trace, {false, 1}, std::move(targets), "local"));
-    reclaimer.freezeTargetBlocksWithTraceIDAndStillIOWorkerID(trace, {}, {0});
+void freezeDecodeEndpointPages(DecodeFrozenPages& frozen,
+                               const std::shared_ptr<const DecodeEndpoint>& endpoint) noexcept {
+    if (!endpoint) return;
+    for (const auto& [tag, pages] : endpoint->pages)
+        for (const auto& page : pages)
+            if (page && page->pin) freezeDecodePage(frozen, page->pool, page->block);
 }
 
 void notifyAllocationChangeState(const std::shared_ptr<KVCacheAllocationWaitState>& state) {
@@ -554,7 +545,7 @@ std::function<void()> KVCacheManager::allocationChangeCallback() const {
 
 bool KVCacheManager::freezeUnknownDecodeWriter(const BatchKVCacheResource& resource) const noexcept {
     if (!isAllocatorOwner() || !coordinator_manager_) return false;
-    std::vector<TransferTargetBlock> targets;
+    DecodeFrozenPages frozen;
     const auto& pools = coordinator_manager_->groupBlockPools();
     const auto& tags = config_.groupTags();
     for (size_t group = 0; group < tags.size() && group < pools.size(); ++group) {
@@ -564,16 +555,15 @@ bool KVCacheManager::freezeUnknownDecodeWriter(const BatchKVCacheResource& resou
             for (auto block : resource.blocks(batch, tags[group])) {
                 // Own a frozen reference even if another operation already
                 // froze this page: its later recovery must not hide our hold.
-                collectDecodePage(targets, pool, block);
+                freezeDecodePage(frozen, pool, block);
             }
         }
     }
     // Endpoint STATE/SWA pages may have left the current table. Their ordinary
     // connector pins must also be replaceable by native frozen references.
-    collectDecodeEndpointPages(targets, resource.decode_endpoint);
+    freezeDecodeEndpointPages(frozen, resource.decode_endpoint);
     for (const auto& endpoint : resource.decode_round_endpoints)
-        collectDecodeEndpointPages(targets, endpoint);
-    freezeDecodeWriterPages(block_tree_cache_->reclaimer(), std::move(targets));
+        freezeDecodeEndpointPages(frozen, endpoint);
     return true;
 }
 
@@ -692,9 +682,8 @@ std::shared_ptr<const DecodeEndpoint> KVCacheManager::retainDecodeEndpointPages(
             // Keep the original device-health stop. Native frozen references
             // protect every actual page after this temporary endpoint unwinds.
             decode_capture_stopped_.store(true);
-            std::vector<TransferTargetBlock> targets;
-            collectDecodeEndpointPages(targets, endpoint);
-            freezeDecodeWriterPages(block_tree_cache_->reclaimer(), std::move(targets));
+            DecodeFrozenPages frozen;
+            freezeDecodeEndpointPages(frozen, endpoint);
         }
 #endif
         throw;
