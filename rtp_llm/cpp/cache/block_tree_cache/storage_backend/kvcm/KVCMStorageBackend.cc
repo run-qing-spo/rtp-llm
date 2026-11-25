@@ -740,7 +740,7 @@ public:
         }
         const TransferCompletionKey key{trace_id, TransferCompletionKey::LegacyWireField::KVCM_TRACE_ID};
         const auto ranks = broadcast_manager_ ? broadcast_manager_->workerNum() : 1;
-        auto targets = decode_publication_enabled_ ? std::vector<TransferTargetBlock>{} : readTargets(requests);
+        auto targets = readTargets(requests);
         RTP_LLM_CHECK(reclaimer_->registerTask(key, {broadcast_manager_ != nullptr, ranks}, std::move(targets), "kvcm"));
         read_trace.swap(trace_id);
         if (done) {
@@ -846,7 +846,7 @@ public:
         try {
             rethrowPayloadFailure(source_may_be_touched);
         } catch (const StorageOperationCompletionUnknown&) {
-            if (!read_trace.empty() && !decode_publication_enabled_) {
+            if (!read_trace.empty()) {
                 reclaimer_->freezeTargetBlocksWithTraceIDAndStillIOWorkerID(read_trace, {});
                 std::rethrow_exception(copyFailureWithTargetProtection(std::current_exception(),
                                                                       StorageTargetProtection::PROTECTED_BY_BACKEND));
@@ -2558,7 +2558,7 @@ private:
         auto       responses = result->responses();
         const bool success   = result->success();
         bool exceptional_unknown = false;
-        const bool track_workers = !read_trace.empty() && !decode_publication_enabled_ && responses.size() == broadcast_manager_->workerNum();
+        const bool track_workers = !read_trace.empty() && responses.size() == broadcast_manager_->workerNum();
         std::vector<size_t> pending;
         for (size_t rank = 0; rank < responses.size(); ++rank) {
             const auto& response = responses[rank];
@@ -2665,7 +2665,7 @@ private:
             executePayload(requests.front().remote_request(), local_response,
                            *storage_request.transfer_task, &source_may_be_touched, std::move(execution), proof);
         }
-        if (!read_trace.empty() && !decode_publication_enabled_)
+        if (!read_trace.empty())
             source_may_be_touched = !hasBufferSafetyProof(responses.front().remote_response());
         return validateResponses(std::move(responses), 1, source_may_be_touched);
     }
