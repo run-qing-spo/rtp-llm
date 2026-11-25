@@ -2066,10 +2066,8 @@ private:
                                          kvcm::PayloadDispatchProof* proof = nullptr,
                                          const ReadExecution* execution = nullptr) {
         auto                                 trace_info = makeTransferTraceInfo(blocks, request);
-        if (operation == REMOTE_OPERATION_READ && request && kv_cache_config_.block_tree_frozen_recovery_interval_ms > 0 &&
-            parallelism_config_.role_type != RoleType::DECODE) {
-            kvcm::setSdkReadExecutionId(trace_info, request->trace_id(),
-                                       execution ? execution->recovery_cancelled : nullptr);
+        if (operation == REMOTE_OPERATION_READ && execution && execution->recovery_cancelled) {
+            kvcm::setSdkReadExecutionId(trace_info, execution->trace_id, execution->recovery_cancelled);
         }
         auto                                 completion = kvcm::ClientWrapper::TransferCompletion::NOT_SUBMITTED;
         RtpLLMRemoteCacheSDKMetricsCollector collector;

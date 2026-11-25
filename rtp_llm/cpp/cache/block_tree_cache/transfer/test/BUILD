@@ -58,7 +58,10 @@ cc_test(
     name = "per_rank_transfer_engine_device_host_test",
     exec_properties = {"gpu": "L20_CU13"},
     testonly = True,
-    srcs = ["PerRankBlockTransferEngineDeviceHostTest.cc"],
+    srcs = [
+        "DeviceHostBufferSafetyTest.cc",
+        "PerRankBlockTransferEngineDeviceHostTest.cc",
+    ],
     copts = test_copts,
     tags = [
         "L20_CU13",
@@ -208,4 +211,13 @@ cc_test(
         "//conditions:default": {"gpu": "H20_CU13"},
     }),
     tags = ["exclusive-if-local"],
+)
+
+cc_test(
+    name = "local_transfer_exception_safety_test",
+    srcs = ["LocalTransferExceptionSafetyTest.cc"],
+    copts = test_copts,
+    deps = test_deps,
+    tags = ["L20_CU13"],
+    exec_properties = {"gpu": "L20_CU13"},
 )
