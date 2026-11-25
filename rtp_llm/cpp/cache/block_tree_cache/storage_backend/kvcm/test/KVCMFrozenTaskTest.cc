@@ -31,12 +31,13 @@ TEST(KVCMFrozenTaskTest, TargetsExcludeLocalPrefixFilteredLinearStateAndUnsentTa
     request.keys = std::make_shared<const CacheKeysType>(CacheKeysType{101, 102, 103});
     request.handles.resize(3);
     std::vector<std::string> trace{"block_tree_read_1"};
-    size_t tags = 0;
-    EXPECT_CALL(*client, loadKvCachesForTagWithStatus(_, _, _, _)).Times(4)
+    size_t completed_tags = 0;
+    EXPECT_CALL(*client, loadKvCachesForTag(_, _, _, _)).Times(3)
         .WillRepeatedly(Invoke([&](const auto&, const auto&, auto&, const auto&) {
             EXPECT_EQ(backend.reclaimer->localState(trace.front()), BlockTreeReclaimer::State::RUNNING);
-            client->load_status = ++tags == 4 ? kv_cache_manager::ER_SDK_TIMEOUT : kv_cache_manager::ER_OK;
-            return *client->load_status;
+            if (++completed_tags == 3)
+                client->load_status = kv_cache_manager::ER_SDK_TIMEOUT;
+            return true;
         }));
     EXPECT_TRUE(readResult(*backend.backend, request, matched.match_meta).ok());
     ASSERT_TRUE(waitForBackendOperationsForTest(*backend.backend));
