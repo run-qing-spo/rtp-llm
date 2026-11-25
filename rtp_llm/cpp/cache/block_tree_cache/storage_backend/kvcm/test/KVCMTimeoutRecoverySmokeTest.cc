@@ -6,6 +6,7 @@
 #include <chrono>
 #include <future>
 #include <memory>
+#include <mutex>
 #include <thread>
 #include <unistd.h>
 
@@ -92,7 +93,8 @@ struct NativeWorker {
     std::shared_ptr<KVCMStorageBackend> backend;
     std::shared_ptr<KVCacheManager> manager;
 
-    bool init(const FilePayload& file, int rank, int ranks, std::shared_ptr<BroadcastManager> broadcast = nullptr) {
+    bool init(const FilePayload& file, int rank, int ranks, std::shared_ptr<BroadcastManager> broadcast = nullptr,
+              std::chrono::milliseconds force_release_timeout = 0ms) {
         kv_cache_manager::Locations locations(1);
         for (int peer = 0; peer < ranks; ++peer)
             locations.front().push_back({"tp" + std::to_string(peer) + "_Fdefault", file.uri()});
@@ -107,7 +109,7 @@ struct NativeWorker {
         config.kvcm_get_timeout_ms = 30000;
         config.kvcm_put_timeout_ms = 30000;
         config.kvcm_task_timeout_ms = 30000;
-        config.block_tree_frozen_force_release_timeout_ms = 0;
+        config.block_tree_frozen_force_release_timeout_ms = force_release_timeout.count();
         auto parallel = singleRankConfig();
         parallel.tp_size = ranks;
         parallel.tp_rank = rank;
@@ -171,7 +173,7 @@ TEST_F(KVCMTimeoutRecoverySmokeTest, ReadRejectsTraceAlreadyRegisteredByBlockTra
     EXPECT_EQ(registry.localState("72"), BlockTreeReclaimer::State::BUFFER_SAFE);
 }
 
-TEST_F(KVCMTimeoutRecoverySmokeTest, LostNativeReadReplyRecoversThroughWorkerQueryAndForget) {
+void expectLostReadRecovery(bool forced) {
     FilePayload file;
     NativeWorker owner, peer;
     std::atomic<size_t> queries_to_safe_worker{0};
@@ -189,6 +191,9 @@ TEST_F(KVCMTimeoutRecoverySmokeTest, LostNativeReadReplyRecoversThroughWorkerQue
                     return grpc::Status(grpc::StatusCode::UNAVAILABLE, "completion proof withheld");
             }
         }
+        if (request.has_completion_forget()) {
+            EXPECT_EQ(request.completion_forget().kvcm_read_released(), forced);
+        }
         auto& worker = rank == 0 ? owner : peer;
         if (!worker.manager->executeFunction(request, response))
             return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT, "unhandled request");
@@ -204,7 +209,7 @@ TEST_F(KVCMTimeoutRecoverySmokeTest, LostNativeReadReplyRecoversThroughWorkerQue
     ASSERT_TRUE(server1.start());
     auto broadcast = std::make_shared<BroadcastManager>(std::vector<std::string>{server0.address(), server1.address()});
     ASSERT_TRUE(broadcast->init());
-    ASSERT_TRUE(owner.init(file, 0, 2, broadcast));
+    ASSERT_TRUE(owner.init(file, 0, 2, broadcast, forced ? 1min : 0min));
     ASSERT_TRUE(peer.init(file, 1, 2));
     ScopedReferencedBlocks target(owner.environment.device_pool, 1);
     ScopedReferencedBlocks replica(peer.environment.device_pool, 1);
@@ -221,13 +226,28 @@ TEST_F(KVCMTimeoutRecoverySmokeTest, LostNativeReadReplyRecoversThroughWorkerQue
     auto& peer_reclaimer = peer.manager->block_tree_cache_->reclaimer();
     EXPECT_EQ(reclaimer.localState(trace), BlockTreeReclaimer::State::BUFFER_SAFE);
     EXPECT_EQ(peer_reclaimer.localState(trace), BlockTreeReclaimer::State::BUFFER_SAFE);
-    allow_peer_proof = true;
+    if (forced) {
+        std::lock_guard<std::mutex> lock(reclaimer.mutex_);
+        const auto it = reclaimer.frozen_.find(trace);
+        ASSERT_NE(it, reclaimer.frozen_.end());
+        it->second.frozen_at -= 1min;
+    } else {
+        allow_peer_proof = true;
+    }
     ASSERT_TRUE(waitForRecovery([&] {
         return !owner.environment.device_pool->isFrozen(target.get().front())
                && reclaimer.localState(trace) == BlockTreeReclaimer::State::UNKNOWN
                && peer_reclaimer.localState(trace) == BlockTreeReclaimer::State::UNKNOWN;
     }));
     EXPECT_EQ(queries_to_safe_worker.load(), 0u);
+}
+
+TEST_F(KVCMTimeoutRecoverySmokeTest, LostNativeReadReplyRecoversThroughWorkerQueryAndForget) {
+    expectLostReadRecovery(false);
+}
+
+TEST_F(KVCMTimeoutRecoverySmokeTest, LostNativeReadReplyForcesReleaseWhenWorkerProofIsUnavailable) {
+    expectLostReadRecovery(true);
 }
 
 }
