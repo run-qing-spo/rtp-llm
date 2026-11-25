@@ -763,7 +763,7 @@ void RtpLLMCachePoolMetrics::report(const kmonitor::MetricsTags* tags, RtpLLMCac
     REPORT_MUTABLE_METRIC(load_ref_blocks_metric, collector->load_ref_blocks);
     REPORT_MUTABLE_METRIC(eviction_ref_blocks_metric, collector->eviction_ref_blocks);
     if (collector->report_frozen_ref_blocks) {
-        REPORT_MUTABLE_METRIC(frozen_ref_blocks_metric, collector->frozen_ref_blocks);
+        RTP_REPORT_MUTABLE_METRIC(frozen_ref_blocks_metric, collector->frozen_ref_blocks);
         for (const char* backend : {"local", "kvcm"}) {
             for (const char* forced : {"false", "true"}) {
                 kmonitor::MetricsTags unfreeze_tags = tags ? *tags : kmonitor::MetricsTags{};

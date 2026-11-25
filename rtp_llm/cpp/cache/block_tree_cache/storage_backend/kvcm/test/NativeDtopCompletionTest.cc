@@ -186,7 +186,6 @@ protected:
         // lifetime/projection cases to reach transfer rather than admission.
         pending_bytes{"RTP_LLM_REMOTE_CACHE_DECODE_PENDING_MIB", "1"};
     // Failure cases deliberately freeze a large fraction of these tiny pools.
-    autil::EnvGuard quarantine_abort{"RTP_LLM_REMOTE_CACHE_QUARANTINE_ABORT_RATIO", "0"};
     struct Scenario {
         static constexpr int kCheckpointCount = 3;
         int                                 cp, shards, count = kCheckpointCount;

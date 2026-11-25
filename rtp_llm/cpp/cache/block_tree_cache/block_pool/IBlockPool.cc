@@ -2,46 +2,14 @@
 
 #include <algorithm>
 #include <cassert>
-#include <cmath>
-#include <cstdio>
-#include <cstdlib>
 #include <limits>
-#include <random>
 #include <sstream>
 
 namespace rtp_llm {
-namespace {
-
-double sampledFrozenBlockAbortRatio(double lower, double upper) {
-    if (lower == 0.0 || lower == upper) {
-        return lower;
-    }
-    static const double random_fraction = [] {
-        std::random_device random;
-        return std::uniform_real_distribution<double>(0.0, 1.0)(random);
-    }();
-    // Keep the sampled threshold below upper even if floating-point addition rounds up.
-    return std::min(lower + random_fraction * (upper - lower), std::nextafter(upper, lower));
-}
-
-}
 
 IBlockPool::IBlockPool(std::shared_ptr<const BlockPoolConfigBase> config): config_(std::move(config)) {
     RTP_LLM_CHECK(config_ != nullptr);
     RTP_LLM_CHECK(config_->physical_block_count > 1);
-    RTP_LLM_CHECK_WITH_INFO(std::isfinite(config_->frozen_block_abort_lower_ratio)
-                               && std::isfinite(config_->frozen_block_abort_upper_ratio)
-                               && config_->frozen_block_abort_lower_ratio >= 0.0
-                               && config_->frozen_block_abort_lower_ratio <= config_->frozen_block_abort_upper_ratio
-                               && config_->frozen_block_abort_upper_ratio <= 1.0,
-                           "frozen block abort ratios must be finite and satisfy 0 <= lower <= upper <= 1");
-    effective_frozen_block_abort_ratio_ =
-        sampledFrozenBlockAbortRatio(config_->frozen_block_abort_lower_ratio, config_->frozen_block_abort_upper_ratio);
-    RTP_LLM_LOG_INFO("pool [%s] frozen block abort ratio: lower=%.17g upper=%.17g effective=%.17g",
-                     config_->pool_name.c_str(),
-                     config_->frozen_block_abort_lower_ratio,
-                     config_->frozen_block_abort_upper_ratio,
-                     effective_frozen_block_abort_ratio_);
     allocated_.assign(config_->physical_block_count, 0);
     tree_refcounts_.assign(config_->physical_block_count, 0);
     for (std::vector<uint32_t>& typed_refcounts : tree_refcounts_by_type_) {
@@ -66,19 +34,15 @@ const std::string& IBlockPool::poolName() const {
 std::string IBlockPool::debugString() const {
     std::lock_guard<std::mutex> lock(mutex_);
     std::ostringstream          oss;
-    oss.precision(std::numeric_limits<double>::max_digits10);
-    const size_t                free_blocks = availableFreeBlocksNoLock();
-    const size_t                used_blocks = totalBlocksNumNoLock() - free_blocks;
+    const size_t free_blocks = availableFreeBlocksNoLock();
+    const size_t used_blocks = totalBlocksNumNoLock() - free_blocks;
     oss << "IBlockPool{name=" << config_->pool_name << ", total=" << totalBlocksNumNoLock() << ", used=" << used_blocks
         << ", free=" << free_blocks << ", available=" << available_blocks_num_
         << ", cache_ref_blocks=" << tree_referenced_block_counts_[treeRefTypeIndex(BlockTreeRefType::CACHE)]
         << ", load_ref_blocks=" << tree_referenced_block_counts_[treeRefTypeIndex(BlockTreeRefType::LOAD)]
         << ", eviction_ref_blocks="
         << tree_referenced_block_counts_[treeRefTypeIndex(BlockTreeRefType::EVICT)]
-        << ", frozen_ref_blocks=" << tree_referenced_block_counts_[treeRefTypeIndex(BlockTreeRefType::FROZEN)]
-        << ", configured_frozen_abort_lower_ratio=" << config_->frozen_block_abort_lower_ratio
-        << ", configured_frozen_abort_upper_ratio=" << config_->frozen_block_abort_upper_ratio
-        << ", effective_frozen_abort_ratio=" << effective_frozen_block_abort_ratio_ << "}";
+        << ", frozen_ref_blocks=" << tree_referenced_block_counts_[treeRefTypeIndex(BlockTreeRefType::FROZEN)] << "}";
     return oss.str();
 }
 
@@ -131,6 +95,7 @@ void IBlockPool::incTreeRef(BlockIdxType block, BlockTreeRefType ref_type) {
 }
 
 void IBlockPool::incTreeRef(const BlockIdList& blocks, BlockTreeRefType ref_type) {
+    RTP_LLM_CHECK(ref_type != BlockTreeRefType::FROZEN);
     const size_t ref_type_index = treeRefTypeIndex(ref_type);
     mutateAllocatedBlocks(
         blocks,
@@ -154,27 +119,6 @@ void IBlockPool::incTreeRefNoLock(BlockIdxType block, size_t ref_type_index) {
     ++typed_refcount;
     updateActiveBlocksNumNoLock(block, was_active);
     updateAvailableBlocksNumNoLock(block, was_available);
-    if (ref_type_index == treeRefTypeIndex(BlockTreeRefType::FROZEN) && typed_refcount == 1
-        && effective_frozen_block_abort_ratio_ > 0.0) {
-        const size_t frozen_blocks = tree_referenced_block_counts_[ref_type_index];
-        const size_t total_blocks  = totalBlocksNumNoLock();
-        const double frozen_ratio  = static_cast<double>(frozen_blocks) / static_cast<double>(total_blocks);
-        if (frozen_ratio > effective_frozen_block_abort_ratio_) {
-            RTP_LLM_LOG_ERROR(
-                "pool [%s] frozen blocks exceed abort ratio %.17g (lower=%.17g upper=%.17g): frozen=%zu total=%zu "
-                "block=%d",
-                config_->pool_name.c_str(),
-                effective_frozen_block_abort_ratio_,
-                config_->frozen_block_abort_lower_ratio,
-                config_->frozen_block_abort_upper_ratio,
-                frozen_blocks,
-                total_blocks,
-                block);
-            fflush(stdout);
-            fflush(stderr);
-            std::abort();
-        }
-    }
 }
 
 void IBlockPool::freezeBlock(BlockIdxType block) noexcept {
@@ -233,6 +177,7 @@ void IBlockPool::decTreeRef(BlockIdxType block, BlockTreeRefType ref_type) {
 }
 
 void IBlockPool::decTreeRef(const BlockIdList& blocks, BlockTreeRefType ref_type) {
+    RTP_LLM_CHECK(ref_type != BlockTreeRefType::FROZEN);
     const size_t ref_type_index = treeRefTypeIndex(ref_type);
     mutateAllocatedBlocks(
         blocks,

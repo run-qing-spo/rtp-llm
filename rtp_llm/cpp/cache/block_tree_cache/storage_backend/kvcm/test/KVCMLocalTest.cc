@@ -631,18 +631,6 @@ TEST(KVCMLocalTest, InvalidDecodeSwitchPreservesPrefillTrafficButStillRejectsDec
     }
 }
 
-TEST(KVCMLocalTest, InitRejectsInvalidQuarantineAbortRatio) {
-    autil::EnvGuard quarantine_abort_ratio("RTP_LLM_REMOTE_CACHE_QUARANTINE_ABORT_RATIO", "invalid");
-    auto            environment    = makeBackendEnvironment("kvcm_storage_backend_invalid_quarantine_ratio");
-    auto            client_wrapper = std::make_shared<MockClientWrapper>();
-    EXPECT_CALL(*client_wrapper, initForPools(_, _, _, _)).Times(0);
-    // StorageBackend::init unwinds the implementation even when validation
-    // fails before SDK registration. The cleanup must remain idempotent.
-    EXPECT_CALL(*client_wrapper, shutdown()).Times(1);
-    auto backend = makeBackend(environment, singleRankConfig(), client_wrapper);
-    EXPECT_FALSE(initSingleRank(*backend.backend, environment));
-}
-
 TEST(KVCMLocalTest, GdrRegistrationUsesActualAllocationSpan) {
     auto environment    = makeBackendEnvironment("kvcm_storage_backend_gdr_span");
     auto client_wrapper = std::make_shared<MockClientWrapper>();
@@ -2823,7 +2811,7 @@ TEST(KVCMLocalTest, PayloadReadFailurePropagatesToCompletion) {
 }
 
 TEST(KVCMLocalTest, PayloadReadTimeoutFreezesOnlyDestinationBlock) {
-    autil::EnvGuard quarantine_abort_ratio("RTP_LLM_REMOTE_CACHE_QUARANTINE_ABORT_RATIO", "0.125");
+    autil::EnvGuard quarantine_abort_ratio("RTP_LLM_REMOTE_CACHE_QUARANTINE_ABORT_RATIO", "0.01");
     auto            environment      = makeBackendEnvironment("kvcm_storage_backend_read_timeout");
     auto            client_wrapper   = std::make_shared<MockClientWrapper>();
     auto            metrics_reporter = std::make_shared<kmonitor::MetricsReporter>("", "", kmonitor::MetricsTags{});
@@ -2909,56 +2897,6 @@ TEST(KVCMLocalTest, PayloadReadTimeoutFreezesOnlyDestinationBlock) {
     EXPECT_DOUBLE_EQ(snapshotGauge(quarantine_metrics->quarantined_lease_count_metric), 0);
     EXPECT_DOUBLE_EQ(snapshotGauge(quarantine_metrics->quarantined_block_count_metric), 0);
     EXPECT_DOUBLE_EQ(snapshotGauge(quarantine_metrics->quarantined_block_ratio_metric), 0);
-}
-
-TEST(KVCMLocalTest, RankZeroAbortsWhenQuarantinedBlocksExceedConfiguredRatio) {
-    // Earlier cases initialize CUDA. Forking that runtime cannot initialize a
-    // new GPU pool; exec a fresh test process so the assertion reaches the
-    // quarantine capacity guard rather than failing in cudaGetDevice.
-    struct RestoreDeathTestStyle {
-        std::string prior = ::testing::GTEST_FLAG(death_test_style);
-        ~RestoreDeathTestStyle() {
-            ::testing::GTEST_FLAG(death_test_style) = prior;
-        }
-    } restore_death_test_style;
-    ::testing::GTEST_FLAG(death_test_style) = "threadsafe";
-    ASSERT_EXIT(
-        ([]() {
-            (void)dup2(STDERR_FILENO, STDOUT_FILENO);
-            autil::EnvGuard feature_off("RTP_LLM_REMOTE_CACHE_ENABLE_DECODE_PUBLISH", "0");
-            autil::EnvGuard console_log("FT_SERVER_TEST", "1");
-            if (!initLogger()) {
-                _exit(5);
-            }
-            autil::EnvGuard quarantine_abort_ratio("RTP_LLM_REMOTE_CACHE_QUARANTINE_ABORT_RATIO", "0.1");
-            auto            environment    = makeBackendEnvironment("kvcm_storage_backend_quarantine_abort");
-            auto            client_wrapper = std::make_shared<MockClientWrapper>();
-
-            EXPECT_CALL(*client_wrapper, initForPools(_, _, _, _)).WillOnce(Return(true));
-            auto backend = makeBackend(environment,
-                                       singleRankConfig(),
-                                       client_wrapper,
-                                       nullptr,
-                                       nullptr,
-                                       /*gdr_enabled=*/false);
-            if (!initSingleRank(*backend.backend, environment)) {
-                _exit(2);
-            }
-
-            kv_cache_manager::Locations locations{
-                kv_cache_manager::Location{kv_cache_manager::LocationSpecUnit{"tp0_Fdefault", "read_uri"}}};
-            EXPECT_CALL(*client_wrapper, match(_, _, _, _, _, _)).WillOnce(Return(std::make_pair(true, locations)));
-            auto observation = match(*backend.backend, makeStorageRequest(environment));
-            if (!observation.success || observation.match_meta == nullptr) {
-                _exit(3);
-            }
-
-            client_wrapper->load_status = kv_cache_manager::ClientErrorCode::ER_SDK_TIMEOUT;
-            (void)readResult(*backend.backend, makeStorageRequest(environment), std::move(observation.match_meta));
-            _exit(4);
-        }()),
-        ::testing::KilledBySignal(SIGABRT),
-        "KVCM quarantined block capacity exceeded on rank 0");
 }
 
 }  // namespace

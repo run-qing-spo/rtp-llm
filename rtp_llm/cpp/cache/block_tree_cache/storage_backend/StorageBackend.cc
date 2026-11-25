@@ -422,8 +422,6 @@ void StorageBackend::quarantineTask(
     RTP_LLM_LOG_WARNING("quarantine storage request after transfer completion became unknown: tasks=%zu blocks=%zu",
                         task_count,
                         block_count);
-    // Count each operation even if its state snapshot is superseded, and before
-    // onQuarantineChanged may abort due to the configured capacity limit.
     onQuarantined(is_write, reason, held_block_count);
     onQuarantineChanged(generation, task_count, block_count, breakdown);
 }

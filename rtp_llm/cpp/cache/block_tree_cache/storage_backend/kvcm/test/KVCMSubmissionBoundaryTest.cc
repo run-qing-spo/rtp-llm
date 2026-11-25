@@ -126,7 +126,6 @@ protected:
     static constexpr auto kOperationTimeout = 2 * kSetupWait;
     static constexpr auto kSettlementWait = kOperationTimeout + kSetupWait;
 
-    autil::EnvGuard quarantine_abort{"RTP_LLM_REMOTE_CACHE_QUARANTINE_ABORT_RATIO", "0"};
     autil::EnvGuard async{"RTP_LLM_STREAM_ASYNC", "0"};
     autil::EnvGuard pending_bytes{"RTP_LLM_REMOTE_CACHE_DECODE_PENDING_MIB", "1"};
     void SetUp() override { initLogger(); }

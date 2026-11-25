@@ -2551,6 +2551,8 @@ TEST_F(KVCacheManagerTest, FrozenForceReleaseTimeoutReachesRecoveryWorker) {
         auto manager = std::make_shared<KVCacheManager>(cache_config, false, nullptr, config);
         ASSERT_TRUE(manager->init());
         auto& reclaimer = manager->blockTreeCache()->reclaimer();
+        EXPECT_EQ(reclaimer.interval_ms_, 1000);
+        EXPECT_EQ(reclaimer.timeout_ms_, 1000);
         manager->block_tree_cache_->stopBackgroundTasks();
         reclaimer.stopped_ = false;
         const auto& groups = manager->blockTreeCache()->groupSets();
@@ -2603,10 +2605,12 @@ TEST_F(KVCacheManagerTest, FrozenForceReleaseTimeoutReachesRecoveryWorker) {
 TEST_F(KVCacheManagerTest, ForgetProgressesWithRecoveryDisabledAndWhileItsWorkerIsBlocked) {
     auto cache_config = makeSimpleMhaCacheConfig(1, 4, 2, DataType::TYPE_INT8);
     KVCacheConfig config;
-    config.block_tree_frozen_recovery_interval_ms = 0;
     KVCacheManager manager(cache_config, false, nullptr, config);
     ASSERT_TRUE(manager.init());
     auto& reclaimer = manager.block_tree_cache_->reclaimer();
+    reclaimer.stop();
+    reclaimer.configure(0, 0, 1000, 0, nullptr);
+    ASSERT_TRUE(reclaimer.start());
     auto check_cleanup = [&](uint64_t trace) {
         const auto id = std::to_string(trace);
         ASSERT_TRUE(reclaimer.registerOnWorkerTaskWithTraceID(id));

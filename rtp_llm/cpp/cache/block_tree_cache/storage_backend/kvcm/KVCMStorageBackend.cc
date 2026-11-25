@@ -250,12 +250,6 @@ public:
         if (!configureDecodePublication(topology, buffer_resolver, pool_resolver, custom_config)) {
             return false;
         }
-        const auto quarantine_abort_ratio = remoteCacheQuarantineAbortRatio();
-        if (!quarantine_abort_ratio.has_value()) {
-            RTP_LLM_LOG_ERROR("RTP_LLM_REMOTE_CACHE_QUARANTINE_ABORT_RATIO must be a finite number in [0, 1]");
-            return false;
-        }
-        quarantine_abort_ratio_ = *quarantine_abort_ratio;
         if (parallelism_config_.tp_rank == 0 && parallelism_config_.tp_size > 1 && !broadcast_manager_) {
             RTP_LLM_LOG_ERROR("BlockTree KVCM rank 0 requires a broadcast manager for tp_size=%ld",
                               parallelism_config_.tp_size);
@@ -511,10 +505,6 @@ public:
                          tp_rank,
                          parallelism_config_.tp_size,
                          group_policy_->debugString().c_str());
-        RTP_LLM_LOG_INFO("BlockTree KVCM quarantine guard, tp_rank=%ld abort_ratio=%.6f total_device_blocks=%zu",
-                         tp_rank,
-                         quarantine_abort_ratio_,
-                         total_device_block_count_);
         reportQuarantineMetrics(/*generation=*/0, /*lease_count=*/0, /*block_count=*/0, {});
         return true;
     }
@@ -1629,26 +1619,6 @@ public:
                                size_t                            block_count,
                                const StorageQuarantineBreakdown& breakdown) noexcept {
         reportQuarantineMetrics(generation, task_count, block_count, breakdown);
-        if (task_count > 0 && parallelism_config_.tp_rank == 0 && quarantine_abort_ratio_ > 0.0
-            && total_device_block_count_ > 0) {
-            // Block counters retain per-task pins; capacity and the aggregate
-            // quarantine ratio count physical FROZEN blocks, as BTC does.
-            size_t frozen_block_count = 0;
-            for (const auto& [tag, pool] : pools_by_tag_) {
-                frozen_block_count += pool->referencedBlocksNum(BlockTreeRefType::FROZEN);
-            }
-            const long double threshold = static_cast<long double>(total_device_block_count_) * quarantine_abort_ratio_;
-            if (static_cast<long double>(frozen_block_count) > threshold) {
-                RTP_LLM_LOG_ERROR("KVCM quarantined block capacity exceeded on rank 0; aborting process: "
-                                  "frozen_blocks=%zu total_device_blocks=%zu abort_ratio=%.6f "
-                                  "threshold_blocks=%.3Lf",
-                                  frozen_block_count,
-                                  total_device_block_count_,
-                                  quarantine_abort_ratio_,
-                                  threshold);
-                std::abort();
-            }
-        }
     }
 
 private:
@@ -2767,7 +2737,6 @@ private:
     std::vector<std::string>                            registration_tags_;
     std::unordered_map<std::string, DeviceBlockPoolPtr> pools_by_tag_;
     size_t                                              total_device_block_count_{0};
-    double                                              quarantine_abort_ratio_{0.0};
     mutable std::mutex                                  quarantine_metrics_mutex_;
     mutable bool                                        quarantine_metrics_reported_{false};
     mutable uint64_t                                    last_quarantine_metrics_generation_{0};

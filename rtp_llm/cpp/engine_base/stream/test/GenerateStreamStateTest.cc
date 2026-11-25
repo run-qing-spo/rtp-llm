@@ -168,7 +168,7 @@ TEST_F(GenerateStreamStateTest, UnknownWriterReleasesOrdinaryResourcesButKeepsNa
     autil::EnvGuard enabled("RTP_LLM_REMOTE_CACHE_ENABLE_DECODE_PUBLISH", "1");
     test::withDecodePublicationStartup([&] {
         auto config = init_config();
-        config.finalizeBlockNums(32, RuntimeConfig{}); // Preserve the native frozen-ratio guard.
+        config.finalizeBlockNums(32, RuntimeConfig{});
         for (bool cancelled : {false, true}) for (bool pending_worker : {false, true})
         for (bool externally_frozen : {false, true}) for (bool pending_submission : {false, true}) {
             SCOPED_TRACE(cancelled);
@@ -212,9 +212,9 @@ TEST_F(GenerateStreamStateTest, UnknownWriterReleasesOrdinaryResourcesButKeepsNa
                     stream->decPendingAsyncBookkeepingAndMaybeRelease();
                 });
             }
-            auto external_recovery = std::shared_ptr<void>(nullptr, [pool, blocks, externally_frozen](void*) {
+            auto external_recovery = std::shared_ptr<void>(nullptr, [release_frozen, externally_frozen](void*) {
                 if (externally_frozen)
-                    for (auto block : blocks) pool->decTreeRef(block, BlockTreeRefType::FROZEN);
+                    release_frozen();
             }); // Drops before mock_quiescence on assertion early return.
             if (cancelled) stream->reportError(ErrorCode::CANCELLED, "original cancellation");
             stream->retainUnknownDecodePublication(stream);

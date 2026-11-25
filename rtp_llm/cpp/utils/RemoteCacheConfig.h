@@ -31,8 +31,4 @@ struct DecodePublicationLimits {
 std::optional<DecodePublicationLimits> remoteCacheDecodePublicationLimits(size_t native_pool_bytes = 4ULL * 1024 * 1024
                                                                                                      * 1024);
 
-// Returns 0 when the environment variable is unset. Invalid or out-of-range
-// values return nullopt so backend initialization can fail explicitly.
-std::optional<double> remoteCacheQuarantineAbortRatio();
-
 }  // namespace rtp_llm

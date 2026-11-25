@@ -12,7 +12,6 @@
 
 #include "rtp_llm/cpp/cache/block_tree_cache/block_pool/IBlockPool.h"
 #include "rtp_llm/cpp/cache/block_tree_cache/metrics/BlockTreeCacheMetricsReporter.h"
-#include "rtp_llm/cpp/config/ConfigModules.h"
 #include "rtp_llm/cpp/model_rpc/BroadcastManager.h"
 #include "rtp_llm/cpp/model_rpc/proto/model_rpc_service.pb.h"
 #include "rtp_llm/cpp/utils/Logger.h"
@@ -96,7 +95,8 @@ void BlockTreeReclaimer::configure(int rank, int64_t interval, int64_t timeout, 
 }
 
 bool BlockTreeReclaimer::start() {
-    if (!KVCacheConfig::validFrozenRecoveryTiming(interval_ms_, timeout_ms_, force_release_timeout_ms_))
+    if (interval_ms_ < 0 || interval_ms_ > INT_MAX || timeout_ms_ <= 0 || timeout_ms_ > INT_MAX
+        || force_release_timeout_ms_ < 0 || force_release_timeout_ms_ > INT_MAX)
         return false;
     if (!threads_.empty())
         return true;

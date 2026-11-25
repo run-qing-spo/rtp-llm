@@ -179,10 +179,6 @@ class CacheTimeoutRecoveryE2ETest(unittest.TestCase):
             "0.04" if d2h else "0.0001",
             "--block_tree_device_evict_high_watermark_ratio",
             "0.065" if d2h else "0.0002",
-            "--block_tree_frozen_recovery_interval_ms",
-            "100",
-            "--block_tree_frozen_recovery_query_timeout_ms",
-            "1000",
             "--block_tree_frozen_force_release_timeout_ms",
             "0",
         ]

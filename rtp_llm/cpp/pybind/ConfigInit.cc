@@ -567,13 +567,8 @@ PYBIND11_MODULE(libth_transformer_config, m) {
         .def_readwrite("block_tree_transfer_worker_count", &KVCacheConfig::block_tree_transfer_worker_count)
         .def_readwrite("block_tree_business_queue_max_size", &KVCacheConfig::block_tree_business_queue_max_size)
         .def_readwrite("block_tree_transfer_queue_max_size", &KVCacheConfig::block_tree_transfer_queue_max_size)
-        .def_readwrite("block_tree_frozen_recovery_interval_ms", &KVCacheConfig::block_tree_frozen_recovery_interval_ms)
-        .def_readwrite("block_tree_frozen_recovery_query_timeout_ms",
-                       &KVCacheConfig::block_tree_frozen_recovery_query_timeout_ms)
         .def_readwrite("block_tree_frozen_force_release_timeout_ms",
                        &KVCacheConfig::block_tree_frozen_force_release_timeout_ms)
-        .def_readwrite("block_pool_frozen_abort_lower_ratio", &KVCacheConfig::block_pool_frozen_abort_lower_ratio)
-        .def_readwrite("block_pool_frozen_abort_upper_ratio", &KVCacheConfig::block_pool_frozen_abort_upper_ratio)
         .def_readwrite("block_tree_device_evict_low_watermark_ratio",
                        &KVCacheConfig::block_tree_device_evict_low_watermark_ratio)
         .def_readwrite("block_tree_device_evict_high_watermark_ratio",
@@ -758,15 +753,15 @@ PYBIND11_MODULE(libth_transformer_config, m) {
                                       self.block_tree_full_disk_evict_high_watermark_ratio,
                                       self.kvcm_task_timeout_ms,
                                       self.disk_cache_evict_timeout_ms,
-                                      self.block_pool_frozen_abort_lower_ratio,
+                                      0.0,
                                       self.btc_crc_slot_count,
                                       self.btc_transfer_engine_async,
                                       self.disk_cache_read_thread_count,
                                       self.disk_cache_write_thread_count,
-                                      self.block_pool_frozen_abort_upper_ratio,
+                                      0.0,
                                       self.disk_cache_evict_max_pending_bytes,
-                                      self.block_tree_frozen_recovery_interval_ms,
-                                      self.block_tree_frozen_recovery_query_timeout_ms,
+                                      1000,
+                                      1000,
                                       self.block_tree_task_pool_size,
                                       self.block_tree_frozen_force_release_timeout_ms,
                                       self.kvcm_model_checkpoint_path);
@@ -875,16 +870,6 @@ PYBIND11_MODULE(libth_transformer_config, m) {
                 if (t.size() >= 85) {
                     c.disk_cache_evict_timeout_ms = t[84].cast<int64_t>();
                 }
-                if (t.size() >= 86) {
-                    c.block_pool_frozen_abort_lower_ratio = t[85].cast<double>();
-                }
-                if (t.size() >= 91) {
-                    c.block_pool_frozen_abort_upper_ratio = t[90].cast<double>();
-                }
-                if (t.size() >= 94) {
-                    c.block_tree_frozen_recovery_interval_ms      = t[92].cast<int64_t>();
-                    c.block_tree_frozen_recovery_query_timeout_ms = t[93].cast<int64_t>();
-                }
                 if (t.size() >= 95) {
                     c.block_tree_task_pool_size = t[94].cast<int>();
                 }
@@ -894,19 +879,9 @@ PYBIND11_MODULE(libth_transformer_config, m) {
                 if (t.size() >= 97) {
                     c.kvcm_model_checkpoint_path = t[96].cast<std::string>();
                 }
-                if (!c.validFrozenRecoveryTiming()) {
-                    throw std::runtime_error("invalid KVCacheConfig frozen recovery timing: expected interval in "
-                                             "[0, INT_MAX], query timeout in [1, INT_MAX] and force release timeout "
-                                             "in [0, INT_MAX]");
-                }
-                if (!std::isfinite(c.block_pool_frozen_abort_lower_ratio)
-                    || !std::isfinite(c.block_pool_frozen_abort_upper_ratio)
-                    || c.block_pool_frozen_abort_lower_ratio < 0.0
-                    || c.block_pool_frozen_abort_lower_ratio > c.block_pool_frozen_abort_upper_ratio
-                    || c.block_pool_frozen_abort_upper_ratio > 1.0) {
-                    throw std::runtime_error(
-                        "invalid KVCacheConfig block pool frozen abort ratio range: expected finite "
-                        "0 <= lower <= upper <= 1");
+                if (c.block_tree_frozen_force_release_timeout_ms < 0
+                    || c.block_tree_frozen_force_release_timeout_ms > std::numeric_limits<int>::max()) {
+                    throw std::runtime_error("invalid KVCacheConfig frozen recovery timing: force release timeout must be in [0, INT_MAX]");
                 }
                 if (t.size() >= 90) {
                     c.btc_crc_slot_count            = t[86].cast<int64_t>();

@@ -172,7 +172,6 @@ std::shared_ptr<HostBlockPool> makePinnedHostPool(size_t usable_blocks) {
     config->pool_name            = "block_tree_evictor_test_host";
     config->physical_block_count = usable_blocks + 1;
     // These small lifetime fixtures intentionally freeze more than the production threshold.
-    config->frozen_block_abort_lower_ratio = 0.0;
     config->payload_bytes        = 64;
     config->stride_bytes         = 4096;
     config->alignment            = 4096;
@@ -219,7 +218,6 @@ makeTestDiskPool(size_t usable_blocks, const std::string& name, size_t stride_by
     config->pool_type            = BlockPoolType::DISK;
     config->pool_name            = name;
     config->work_dir             = "/tmp";
-    config->frozen_block_abort_lower_ratio = 0.0;
     config->payload_bytes        = 64;
     config->stride_bytes                   = stride_bytes;
     config->disk_size_bytes      = (usable_blocks + 1) * config->stride_bytes;
@@ -3821,7 +3819,7 @@ TEST_F(BlockTreeEvictorTest, ChooseVictimMetricsFrozenSourcesAndFirstRejectionRe
                                      0,
                                      1,
                                      {{EvictionVictimSkipReason::FROZEN, 1}});
-        pool->decTreeRef(source, BlockTreeRefType::FROZEN);
+        pool->prepareFrozenReferenceRelease({source})();
         EXPECT_TRUE(evictor_->dropLocked(0, tier, false));
     }
 }
@@ -5180,14 +5178,14 @@ TEST_F(BlockTreeEvictorTest, FrozenCandidateBecomesEligibleAfterLastFrozenRefere
     auto result = insert({100}, {{makeResource(Tier::HOST, block)}});
     ASSERT_NE(insertedNode(result), nullptr);
     host_pool->freezeBlock(block);
-    host_pool->incTreeRef(block, BlockTreeRefType::FROZEN);
+    host_pool->freezeBlock(block);
     EXPECT_FALSE(evictor_->chooseVictim(0, Tier::HOST).has_value());
     EXPECT_EQ(host_pool->referencedBlocksNum(BlockTreeRefType::FROZEN), 1u);
 
-    host_pool->decTreeRef(block, BlockTreeRefType::FROZEN);
+    host_pool->prepareFrozenReferenceRelease({block})();
     EXPECT_TRUE(host_pool->isFrozen(block));
     EXPECT_FALSE(evictor_->chooseVictim(0, Tier::HOST).has_value());
-    host_pool->decTreeRef(block, BlockTreeRefType::FROZEN);
+    host_pool->prepareFrozenReferenceRelease({block})();
     EXPECT_FALSE(host_pool->isFrozen(block));
     const auto victim = evictor_->chooseVictim(0, Tier::HOST);
     ASSERT_TRUE(victim.has_value());

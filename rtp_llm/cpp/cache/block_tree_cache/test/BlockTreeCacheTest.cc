@@ -720,6 +720,7 @@ TEST(BlockTreeCacheMetricsTest, FrozenMetricIsOwnerOnlyAndIncludesZeroForEveryTi
     for (const Tier tier : {Tier::DEVICE, Tier::HOST, Tier::DISK}) {
         kmonitor::MetricsTags tags("pool_name", "shared_name");
         tags.AddTag("tier", tierName(tier));
+        const auto serving_tags = kmonTagsWithServiceStatus(&tags);
         collector.report_frozen_ref_blocks = false;
         collector.frozen_ref_blocks        = 9;
         const auto series_before           = metricSeriesCount(metrics->frozen_ref_blocks_metric);
@@ -731,10 +732,10 @@ TEST(BlockTreeCacheMetricsTest, FrozenMetricIsOwnerOnlyAndIncludesZeroForEveryTi
         collector.frozen_ref_blocks        = 0;
         ASSERT_TRUE((reporter->report<RtpLLMCachePoolMetrics, RtpLLMCachePoolMetricsCollector>(&tags, &collector)));
         EXPECT_EQ(metricSeriesCount(metrics->frozen_ref_blocks_metric), series_before + 1);
-        EXPECT_DOUBLE_EQ(snapshotQps(metrics->frozen_ref_blocks_metric, tags), 0);
+        EXPECT_DOUBLE_EQ(snapshotQps(metrics->frozen_ref_blocks_metric, serving_tags), 0);
         collector.frozen_ref_blocks = 2;
         ASSERT_TRUE((reporter->report<RtpLLMCachePoolMetrics, RtpLLMCachePoolMetricsCollector>(&tags, &collector)));
-        EXPECT_DOUBLE_EQ(snapshotQps(metrics->frozen_ref_blocks_metric, tags), 2);
+        EXPECT_DOUBLE_EQ(snapshotQps(metrics->frozen_ref_blocks_metric, serving_tags), 2);
         EXPECT_DOUBLE_EQ(snapshotQps(metrics->eviction_ref_blocks_metric, tags), 0);
     }
     EXPECT_EQ(metricSeriesCount(metrics->frozen_ref_blocks_metric), 3u);
@@ -775,14 +776,14 @@ TEST(BlockTreeCacheMetricsTest, FrozenSnapshotsTrackReferencesAcrossAllTiers) {
         EXPECT_EQ(metrics_data.eviction_ref_blocks, 0u);
     }
     for (const auto& [pool, block] : frozen_blocks) {
-        pool->decTreeRef(block, BlockTreeRefType::FROZEN);
+        pool->prepareFrozenReferenceRelease({block})();
         EXPECT_EQ(pool->treeRefCount(block), 1u);
     }
     for (const auto& metrics_data : reporter.collectPoolMetrics(groups)) {
         EXPECT_EQ(metrics_data.frozen_ref_blocks, 1u);
     }
     for (const auto& [pool, block] : frozen_blocks) {
-        pool->decTreeRef(block, BlockTreeRefType::FROZEN);
+        pool->prepareFrozenReferenceRelease({block})();
     }
     for (const auto& metrics_data : reporter.collectPoolMetrics(groups)) {
         EXPECT_EQ(metrics_data.frozen_ref_blocks, 0u);
@@ -2695,16 +2696,22 @@ TEST_F(BlockTreeCacheTest, WatermarkDirectDropPreservesDeviceBlockWithTreeOperat
 
     const size_t initial_free = pool->freeBlocksNum();
     const auto   version      = cache_->getKeySnapshot().version;
-    for (const BlockTreeRefType type : {BlockTreeRefType::LOAD, BlockTreeRefType::EVICT, BlockTreeRefType::FROZEN}) {
-        pool->incTreeRef(42, type);
+    auto expect_preserved = [&] {
         BlockTreeCacheTestPeer::runMaintenanceForTest(*cache_);
         BlockTreeCacheTestPeer::waitForTaskPoolIdleForTest(*cache_);
         EXPECT_EQ(pool->freeBlocksNum(), initial_free);
         EXPECT_EQ(cache_->getKeySnapshot().version, version);
         EXPECT_FALSE(cache_->tree()->findNode({100}).empty());
         EXPECT_EQ(cache_->getStats().device_heap_total_size, 1u);
+    };
+    for (const auto type : {BlockTreeRefType::LOAD, BlockTreeRefType::EVICT}) {
+        pool->incTreeRef(42, type);
+        expect_preserved();
         pool->decTreeRef(42, type);
     }
+    pool->freezeBlock(42);
+    expect_preserved();
+    pool->prepareFrozenReferenceRelease({42})();
 
     BlockTreeCacheTestPeer::runMaintenanceForTest(*cache_);
     BlockTreeCacheTestPeer::waitForTaskPoolIdleForTest(*cache_);
@@ -2753,15 +2760,21 @@ TEST_F(BlockTreeCacheTest, ForceDropSkipsDeviceBlockWithTreeOperationReference) 
     std::vector<std::vector<GroupSetResource>> resources(1, std::vector<GroupSetResource>(1));
     resources[0][0].device_blocks = {42};
     cache_->insert({100}, resources, Tier::DEVICE);
-    for (const BlockTreeRefType type : {BlockTreeRefType::LOAD, BlockTreeRefType::EVICT, BlockTreeRefType::FROZEN}) {
-        pool->incTreeRef(42, type);
+    auto expect_preserved = [&] {
         const size_t initial_free = pool->freeBlocksNum();
         EXPECT_EQ(cache_->evictForGroup("group0", 1), 0);
         EXPECT_EQ(pool->freeBlocksNum(), initial_free);
         EXPECT_FALSE(cache_->tree()->findNode({100}).empty());
         EXPECT_EQ(cache_->getStats().device_heap_total_size, 1u);
+    };
+    for (const auto type : {BlockTreeRefType::LOAD, BlockTreeRefType::EVICT}) {
+        pool->incTreeRef(42, type);
+        expect_preserved();
         pool->decTreeRef(42, type);
     }
+    pool->freezeBlock(42);
+    expect_preserved();
+    pool->prepareFrozenReferenceRelease({42})();
     EXPECT_EQ(cache_->evictForGroup("group0", 1), 1);
     EXPECT_FALSE(pool->isAllocated(42));
 }

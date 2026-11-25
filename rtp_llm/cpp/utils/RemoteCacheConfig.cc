@@ -2,7 +2,6 @@
 
 #include <cerrno>
 #include <algorithm>
-#include <cmath>
 #include <cstdlib>
 #include <optional>
 #include <string_view>
@@ -71,21 +70,6 @@ std::optional<DecodePublicationLimits> remoteCacheDecodePublicationLimits(size_t
         limits.bytes = *mib * 1024 * 1024;
     limits.jobs = *jobs;
     return limits;
-}
-
-std::optional<double> remoteCacheQuarantineAbortRatio() {
-    const char* value = std::getenv("RTP_LLM_REMOTE_CACHE_QUARANTINE_ABORT_RATIO");
-    if (value == nullptr || *value == '\0') {
-        return 0.0;
-    }
-
-    errno            = 0;
-    char*      end   = nullptr;
-    const auto ratio = std::strtod(value, &end);
-    if (errno == ERANGE || end == value || *end != '\0' || !std::isfinite(ratio) || ratio < 0.0 || ratio > 1.0) {
-        return std::nullopt;
-    }
-    return ratio;
 }
 
 }  // namespace rtp_llm

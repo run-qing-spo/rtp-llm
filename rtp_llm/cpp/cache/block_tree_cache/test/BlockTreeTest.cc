@@ -621,7 +621,7 @@ TEST(BlockTreeTest, InsertReplacesIdleFrozenLowerTierWithoutReclaimingBacking) {
         IBlockPool* pool  = tier == Tier::HOST ? static_cast<IBlockPool*>(tree.groupSets()[0]->hostPool().get()) :
                                                  static_cast<IBlockPool*>(tree.groupSets()[0]->diskPool().get());
         pool->freezeBlock(block);
-        block_tree_cache_detail::ScopeRollback unfreeze([&]() { pool->decTreeRef(block, BlockTreeRefType::FROZEN); });
+        block_tree_cache_detail::ScopeRollback unfreeze(pool->prepareFrozenReferenceRelease({block}));
 
         const auto result = tree.insertNode({100, 200}, make2DResources(1, 2, 20), true, false);
 

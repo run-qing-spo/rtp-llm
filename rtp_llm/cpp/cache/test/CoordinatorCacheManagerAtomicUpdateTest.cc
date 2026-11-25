@@ -309,7 +309,6 @@ TEST_F(CoordinatorCacheManagerAtomicUpdateTest, UpdateKVBlockEmptyResourcesNeedN
 TEST_F(CoordinatorCacheManagerAtomicUpdateTest, UpdateKVBlockDoesNotTransferExternallyReferencedTail) {
     auto config = createSingleTypeTestConfig(/*layer_num=*/1, /*block_num=*/3, /*seq_size_per_block=*/4);
     // This ownership test freezes one of only two usable blocks.
-    config.block_pool_frozen_abort_lower_ratio = 0.0;
     allocator_  = std::make_shared<TestAllocator>(config, AllocationType::HOST);
     ASSERT_TRUE(allocator_->init());
     auto pool   = allocator_->groupBlockPools().front();
@@ -334,7 +333,7 @@ TEST_F(CoordinatorCacheManagerAtomicUpdateTest, UpdateKVBlockDoesNotTransferExte
     expect_tail_preserved();
     pool->decRef(blocks[1]);
     for (const auto owner :
-         {BlockTreeRefType::CACHE, BlockTreeRefType::LOAD, BlockTreeRefType::EVICT, BlockTreeRefType::FROZEN}) {
+         {BlockTreeRefType::CACHE, BlockTreeRefType::LOAD, BlockTreeRefType::EVICT}) {
         SCOPED_TRACE(static_cast<int>(owner));
         pool->incTreeRef(blocks[1], owner);
         expect_tail_preserved();
@@ -348,7 +347,7 @@ TEST_F(CoordinatorCacheManagerAtomicUpdateTest, UpdateKVBlockDoesNotTransferExte
     EXPECT_EQ(pool->freeBlocksNum(), pool->totalBlocksNum() - 1);
     EXPECT_EQ(pool->referencedBlocksNum(BlockTreeRefType::FROZEN), 1u);
     EXPECT_EQ(pool->refCount(blocks[1]), 1u);
-    pool->decTreeRef(blocks[1], BlockTreeRefType::FROZEN);
+    pool->prepareFrozenReferenceRelease({blocks[1]})();
     EXPECT_EQ(pool->freeBlocksNum(), pool->totalBlocksNum());
 }
 

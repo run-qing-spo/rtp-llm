@@ -348,7 +348,6 @@ private:
     std::mutex quarantine_mutex_;
     std::condition_variable quarantine_cv_;
     std::shared_ptr<storage_backend_detail::StorageTaskState> protected_quarantine_;
-    // Preserve the per-operation quarantine metrics and abort threshold.
     size_t                     quarantined_task_count_{0};
     size_t                     quarantined_block_count_{0};
     uint64_t                   quarantine_generation_{0};

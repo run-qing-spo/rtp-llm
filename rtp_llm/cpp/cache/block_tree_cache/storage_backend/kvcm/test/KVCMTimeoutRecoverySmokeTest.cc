@@ -108,8 +108,6 @@ struct NativeWorker {
         config.kvcm_put_timeout_ms = 30000;
         config.kvcm_task_timeout_ms = 30000;
         config.block_tree_frozen_force_release_timeout_ms = 0;
-        config.block_tree_frozen_recovery_interval_ms = 10;
-        config.block_tree_frozen_recovery_query_timeout_ms = 1000;
         auto parallel = singleRankConfig();
         parallel.tp_size = ranks;
         parallel.tp_rank = rank;

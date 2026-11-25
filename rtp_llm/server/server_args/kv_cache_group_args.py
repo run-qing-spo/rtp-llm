@@ -18,30 +18,8 @@ def _frozen_recovery_ms(value, minimum, name):
     return duration
 
 
-def _frozen_recovery_interval_ms(value):
-    return _frozen_recovery_ms(value, 0, "block_tree_frozen_recovery_interval_ms")
-
-
-def _frozen_recovery_query_timeout_ms(value):
-    return _frozen_recovery_ms(value, 1, "block_tree_frozen_recovery_query_timeout_ms")
-
-
 def _frozen_force_release_timeout_ms(value):
     return _frozen_recovery_ms(value, 0, "block_tree_frozen_force_release_timeout_ms")
-
-
-def _frozen_abort_ratio(value):
-    try:
-        ratio = float(value)
-    except (TypeError, ValueError) as error:
-        raise argparse.ArgumentTypeError(
-            "block pool frozen abort ratio must be a finite number in [0, 1]"
-        ) from error
-    if not math.isfinite(ratio) or not 0 <= ratio <= 1:
-        raise argparse.ArgumentTypeError(
-            "block pool frozen abort ratio must be a finite number in [0, 1]"
-        )
-    return ratio
 
 
 def _positive_finite_ratio(value):
@@ -443,47 +421,13 @@ def init_kv_cache_group_args(parser, kv_cache_config):
         help="各传输方向共用的最大 descriptor 批大小；Disk->Device 还受 staging 容量限制，Device->Disk 保留单项提交。",
     )
     kv_cache_group.add_argument(
-        "--block_pool_frozen_abort_lower_ratio",
-        env_name="BLOCK_POOL_FROZEN_ABORT_LOWER_RATIO",
-        bind_to=(kv_cache_config, "block_pool_frozen_abort_lower_ratio"),
-        type=_frozen_abort_ratio,
-        default=0.3,
-        help="单个 DEVICE/HOST/DISK pool 的冻结 block abort 阈值下限，默认 0.3。实际阈值在 [下限, 上限) 均匀采样，进程内固定；上下限相等时使用固定值。下限为 0 关闭保护，否则冻结占比严格超过实际阈值时 core。要求 0 <= 下限 <= 上限 <= 1；启动时配置。",
-    )
-    kv_cache_group.add_argument(
-        "--block_tree_frozen_recovery_interval_ms",
-        env_name="BLOCK_TREE_FROZEN_RECOVERY_INTERVAL_MS",
-        bind_to=(kv_cache_config, "block_tree_frozen_recovery_interval_ms"),
-        type=_frozen_recovery_interval_ms,
-        default=1000,
-        help="冻结任务恢复的轮询间隔，单位毫秒，默认 1000；0 暂停自动解冻，完成记录仍独立清理。范围 [0, 2147483647]。"
-        "原参与者均确认 buffer safe 或达到强制解冻超时后释放冻结引用。",
-    )
-    kv_cache_group.add_argument(
-        "--block_tree_frozen_recovery_query_timeout_ms",
-        env_name="BLOCK_TREE_FROZEN_RECOVERY_QUERY_TIMEOUT_MS",
-        bind_to=(kv_cache_config, "block_tree_frozen_recovery_query_timeout_ms"),
-        type=_frozen_recovery_query_timeout_ms,
-        default=1000,
-        help="单个冻结任务查询的超时预算，单位毫秒，默认 1000；范围 [1, 2147483647]。"
-        "查询失败或缺少安全证明时，在强制解冻超时前保留冻结引用。",
-    )
-    kv_cache_group.add_argument(
         "--block_tree_frozen_force_release_timeout_ms",
         env_name="BLOCK_TREE_FROZEN_FORCE_RELEASE_TIMEOUT_MS",
         bind_to=(kv_cache_config, "block_tree_frozen_force_release_timeout_ms"),
         type=_frozen_force_release_timeout_ms,
         default=300000,
         help="冻结任务强制解冻超时，单位毫秒，默认 300000（5 分钟）；0 关闭超时兜底，范围 [0, 2147483647]。"
-        "启用恢复轮询时生效；超时后即使缺少 buffer safe 证明也释放冻结引用，不会取消底层 I/O。",
-    )
-    kv_cache_group.add_argument(
-        "--block_pool_frozen_abort_upper_ratio",
-        env_name="BLOCK_POOL_FROZEN_ABORT_UPPER_RATIO",
-        bind_to=(kv_cache_config, "block_pool_frozen_abort_upper_ratio"),
-        type=_frozen_abort_ratio,
-        default=0.4,
-        help="DEVICE/HOST/DISK pool 的冻结 block abort 阈值上限，默认 0.4，必须不小于 block_pool_frozen_abort_lower_ratio 且不超过 1。上下限不相等时实际阈值严格小于上限。",
+        "超时后即使缺少 buffer safe 证明也释放冻结引用，不会取消底层 I/O。",
     )
     kv_cache_group.add_argument(
         "--btc_transfer_engine_async",

@@ -318,9 +318,9 @@ bool KVCacheManager::init() {
     RTP_LLM_CHECK_WITH_INFO(!coordinator_manager_ && !block_tree_cache_ && !metrics_reporter_thread_.joinable(),
                             "KVCacheManager::init called more than once");
     RTP_LLM_CHECK_WITH_INFO(config_.groupNums() > 0, "cache specs must not be empty");
-    if (!kv_cache_config_.validFrozenRecoveryTiming()) {
-        RTP_LLM_LOG_ERROR("invalid frozen recovery interval/query timeout; interval must be in [0, INT_MAX] "
-                          "and query timeout in [1, INT_MAX], force release timeout in [0, INT_MAX]");
+    if (kv_cache_config_.block_tree_frozen_force_release_timeout_ms < 0
+        || kv_cache_config_.block_tree_frozen_force_release_timeout_ms > std::numeric_limits<int>::max()) {
+        RTP_LLM_LOG_ERROR("frozen force release timeout must be in [0, INT_MAX]");
         return false;
     }
     if (kv_cache_config_.enable_remote_cache && kv_cache_config_.kvcm_asyncwrapper_thread_num == 0) {
