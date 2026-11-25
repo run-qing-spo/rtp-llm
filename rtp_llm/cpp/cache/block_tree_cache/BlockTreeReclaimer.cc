@@ -8,8 +8,6 @@
 #include <optional>
 #include <set>
 
-#include <boost/exception/diagnostic_information.hpp>
-
 #include "rtp_llm/cpp/cache/block_tree_cache/block_pool/IBlockPool.h"
 #include "rtp_llm/cpp/cache/block_tree_cache/metrics/BlockTreeCacheMetricsReporter.h"
 #include "rtp_llm/cpp/model_rpc/BroadcastManager.h"
@@ -522,9 +520,10 @@ BlockTreeReclaimer::State BlockTreeReclaimer::queryOne(const std::string& id, Cl
         try {
             if (record.query(deadline))
                 ioFinishedOnWorkerWithTraceID(id);
+        } catch (const std::exception& error) {
+            RTP_LLM_LOG_WARNING("worker buffer safety query failed: trace=%s, reason=%s", id.c_str(), error.what());
         } catch (...) {
-            RTP_LLM_LOG_WARNING("worker buffer safety query failed: trace=%s, reason=%s",
-                                id.c_str(), boost::current_exception_diagnostic_information().c_str());
+            RTP_LLM_LOG_WARNING("worker buffer safety query failed: trace=%s, reason=unknown exception", id.c_str());
         }
         lock.lock();
         --record.queries;
