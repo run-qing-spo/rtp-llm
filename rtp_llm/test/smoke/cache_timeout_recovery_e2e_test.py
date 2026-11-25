@@ -21,8 +21,8 @@ from transformers import AutoTokenizer
 from rtp_llm.test.smoke.remote_kvcm_server import RemoteKVCMServer
 from rtp_llm.test.smoke.timeout_recovery_checks import (
     analyze_timeout_recovery,
-    d2h_timeout_records,
     frozen_host_metric_samples,
+    recovery_pool_samples,
 )
 from rtp_llm.test.utils.maga_server_manager import MagaServerManager
 
@@ -183,6 +183,8 @@ class CacheTimeoutRecoveryE2ETest(unittest.TestCase):
             "100",
             "--block_tree_frozen_recovery_query_timeout_ms",
             "1000",
+            "--block_tree_frozen_force_release_timeout_ms",
+            "0",
         ]
         if d2h:
             # 仅保留 DEVICE→HOST 淘汰；足够的 HOST 容量避免冻结比例保护抢先触发。
@@ -293,11 +295,7 @@ class CacheTimeoutRecoveryE2ETest(unittest.TestCase):
                 "FT_SERVER_TEST": "0",
                 "LOG_LEVEL": "INFO",
                 **self.remote_env,
-                **(
-                    {"kmonitorEnableLogFileSink": "true"}
-                    if OPTIONS.scenario == "local_d2h_rpc"
-                    else {}
-                ),
+                "kmonitorEnableLogFileSink": "true",
             },
             role_name=label,
             smoke_args_str=args,
@@ -486,10 +484,14 @@ class CacheTimeoutRecoveryE2ETest(unittest.TestCase):
     def wait_for_recovery(self, server):
         deadline = time.monotonic() + OPTIONS.recovery_seconds
         stable_since = time.monotonic()
+        after_ms = int(time.time() * 1000) + 2000
         previous = None
         while True:
             text = self.log_text(server)
             report = analyze_timeout_recovery(text, backend=self.backend)
+            pools = recovery_pool_samples(text, backend=self.backend, after_ms=after_ms)
+            report["pool_recovery"] = pools
+            self.assertFalse(pools["forced"], report)
             now = time.monotonic()
             signature = json.dumps(report, sort_keys=True)
             if signature != previous:
@@ -498,7 +500,7 @@ class CacheTimeoutRecoveryE2ETest(unittest.TestCase):
             # An empty snapshot immediately after generation can precede an
             # asynchronous store failure or its log flush. Require a quiet
             # evidence window as well as the release of every observed freeze.
-            if not report["pending"] and now - stable_since >= 1.0:
+            if pools["settled"] and not report["pending"] and now - stable_since >= 1.0:
                 self.persist_evidence(server, text, report)
                 return report
             if now >= deadline:
@@ -513,7 +515,7 @@ class CacheTimeoutRecoveryE2ETest(unittest.TestCase):
     def coverage(self, report):
         evidence = report["evidence"]
         if OPTIONS.scenario.endswith("rpc"):
-            return bool(report["frozen"]) and bool(
+            return bool(report["pool_recovery"]["recovered"]) and bool(
                 evidence.get(self.backend + "_rpc_timeout")
             )
         if OPTIONS.scenario == "kvcm_sdk":
@@ -579,8 +581,11 @@ class CacheTimeoutRecoveryE2ETest(unittest.TestCase):
                     ],
                     report,
                 )
-                records = d2h_timeout_records(report)
-                if not records:
+                pools = {
+                    pool for tier, pool in report["pool_recovery"]["recovered"]
+                    if tier == "HOST"
+                }
+                if not pools or not report["evidence"].get("local_d2h_rpc_timeout"):
                     continue
                 self.assertTrue(report["passed"], report)
                 # 在同一进程恢复后做真实推理，避免仅重启后可用的假阳性。
@@ -592,17 +597,10 @@ class CacheTimeoutRecoveryE2ETest(unittest.TestCase):
                 )
                 final = self.wait_for_recovery(server)
                 self.assertTrue(final["passed"], final)
-                pools = {
-                    pool
-                    for record in d2h_timeout_records(final)
-                    for pool in record["target_pools"]
-                }
-                self.assertTrue(pools, final)
                 self.wait_for_host_metric_zero(server, pools)
                 logging.info(
-                    "D2H recovery passed: budget=%d traces=%s HOST pools=%s",
+                    "D2H recovery passed: budget=%d HOST pools=%s",
                     budget,
-                    [record["trace"] for record in records],
                     sorted(pools),
                 )
                 return

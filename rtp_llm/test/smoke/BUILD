@@ -8,7 +8,9 @@ package(default_visibility = ["//visibility:public"])
 test_suite(
     name = "smoke_cache_timeout_recovery_native",
     tests = [
-        "//rtp_llm/cpp/cache/block_tree_cache/transfer/test:local_timeout_recovery_smoke_test",
+        "//rtp_llm/cpp/cache/block_tree_cache/test:block_tree_reclaimer_test",
+        "//rtp_llm/cpp/cache/block_tree_cache/transfer/test:transfer_work_loop_test",
+        "//rtp_llm/cpp/cache/block_tree_cache/transfer/test:multi_rank_block_transfer_engine_test",
         "//rtp_llm/cpp/cache/block_tree_cache/storage_backend/kvcm/test:kvcm_timeout_recovery_smoke_test",
     ],
     tags = ["manual"],

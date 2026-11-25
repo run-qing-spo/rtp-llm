@@ -183,7 +183,7 @@ TEST_F(GenerateStreamStateTest, UnknownWriterReleasesOrdinaryResourcesButKeepsNa
             auto pool = cache_manager_->coordinator_manager_->groupBlockPools().front();
             const auto blocks = resource.kvCache().blocks(0, "default");
             ASSERT_FALSE(blocks.empty());
-            if (externally_frozen) for (auto block : blocks) pool->freezeBlock(block, "independent operation");
+            if (externally_frozen) for (auto block : blocks) pool->freezeBlock(block);
             // No executor or GPU writer is submitted in this test. Only this
             // test-owned proof permits clearing its simulated UNKNOWN at scope
             // exit; no production reset/quiescence API is added.

@@ -1,3 +1,4 @@
+#include "rtp_llm/cpp/cache/block_tree_cache/BlockTreeReclaimer.h"
 #include "rtp_llm/cpp/cache/block_tree_cache/BlockTreeCache.h"
 
 #include <algorithm>
@@ -9,6 +10,7 @@
 #include "rtp_llm/cpp/cache/block_tree_cache/diagnostic/FullPrefixInvariantScanner.h"
 #include "rtp_llm/cpp/cache/block_tree_cache/evict/BlockTreeEvictor.h"
 #include "rtp_llm/cpp/cache/block_tree_cache/transfer/BlockTransferDispatcher.h"
+#include "rtp_llm/cpp/cache/block_tree_cache/transfer/BlockTransferRequestConverter.h"
 #include "rtp_llm/cpp/cache/block_tree_cache/block_pool/DiskBlockPool.h"
 #include "rtp_llm/cpp/cache/block_tree_cache/block_pool/HostBlockPool.h"
 #include "rtp_llm/cpp/cache/AsyncContext.h"
@@ -22,7 +24,8 @@ BlockTreeCache::BlockTreeCache(std::unique_ptr<BlockTree>                     tr
                                std::shared_ptr<StorageBackend>                storage_backend,
                                std::unique_ptr<BlockTransferDispatcher>       transfer_dispatcher,
                                std::unique_ptr<BlockTreeTaskPool>             task_pool,
-                               std::shared_ptr<BlockTreeCacheMetricsReporter> metrics_reporter):
+                               std::shared_ptr<BlockTreeCacheMetricsReporter> metrics_reporter,
+                               std::shared_ptr<BlockTreeReclaimer>            reclaimer):
     config_(std::move(config)),
     tree_(std::move(tree)),
     storage_backend_(std::move(storage_backend)),
@@ -57,10 +60,12 @@ BlockTreeCache::BlockTreeCache(std::unique_ptr<BlockTree>                     tr
             [this](bool check_watermark) { onWorkflowSettledLocked(check_watermark); }),
     storer_(tree_.get(), evictor_, *metrics_reporter_, storage_backend_, [this](bool check_watermark) {
         onWorkflowSettledLocked(check_watermark);
-    }) {
+    }),
+    reclaimer_(std::move(reclaimer)) {
     metrics_reporter_->initEvictionMetricGroupTypes(tree_->groupSets());
-    if (storage_backend_)
+    if (storage_backend_) {
         storage_backend_->setStageMetricsReporter(metrics_reporter_);
+    }
 }
 
 bool BlockTreeCache::init() {
@@ -99,11 +104,18 @@ bool BlockTreeCache::init() {
                              config_.full_prefix_scan_interval_ms);
         }
     }
+    if (!reclaimer_->start())
+        return false;
     initialized_ = true;
     return true;
 }
 
+void BlockTreeCache::stopBackgroundTasks() {
+    reclaimer_->stop();
+}
+
 BlockTreeCache::~BlockTreeCache() {
+    stopBackgroundTasks();
     full_prefix_scanner_.reset();
     RTP_LLM_LOG_INFO("destroying, closing load tickets...");
     shutdownLoads();
@@ -128,25 +140,39 @@ void BlockTreeCache::shutdownLoads() {
     loader_.shutdown();
 }
 
-std::vector<std::shared_ptr<FrozenTask>> BlockTreeCache::frozenTasks() const {
-    return transfer_dispatcher_ ? transfer_dispatcher_->frozenTasks() : std::vector<std::shared_ptr<FrozenTask>>{};
-}
-
-TransferTaskRegistry::ForgetResult BlockTreeCache::forgetLocalTransferCompletion(uint64_t trace_id, bool force) const {
-    return transfer_dispatcher_ ? transfer_dispatcher_->forgetLocalCompletion(trace_id, force) :
-                                  TransferTaskRegistry::ForgetResult::FAILED;
-}
-
-void BlockTreeCache::setCompletionCleanup(std::shared_ptr<TransferCompletionCleanup> cleanup) {
-    if (transfer_dispatcher_)
-        transfer_dispatcher_->setCompletionCleanup(std::move(cleanup));
-}
-
-TransferTaskRegistry::State BlockTreeCache::localTransferCompletion(uint64_t trace_id) const {
-    if (!transfer_dispatcher_) {
-        return TransferTaskRegistry::State::UNKNOWN;
+bool BlockTreeCache::executeFunction(BlockTreeCache*          cache,
+                                     int                      rank,
+                                     const FunctionRequestPB& request,
+                                     FunctionResponsePB&      response,
+                                     std::chrono::steady_clock::time_point deadline) {
+    switch (request.request_case()) {
+        case FunctionRequestPB::kCompletionQuery:
+        case FunctionRequestPB::kCompletionForget:
+            return BlockTreeReclaimer::executeFunction(
+                cache ? cache->reclaimer_.get() : nullptr, rank, request, response, deadline);
+        case FunctionRequestPB::kRemoteRequest:
+            if (!cache || !cache->storage_backend_) {
+                RTP_LLM_LOG_WARNING("remote storage backend is not initialized");
+                return false;
+            }
+            return cache->storage_backend_->executeRemoteRequest(request.remote_request(), response);
+        case FunctionRequestPB::kMemRequest: {
+            if (!cache) {
+                RTP_LLM_LOG_WARNING("block tree cache is not initialized");
+                return false;
+            }
+            auto& reply = *response.mutable_mem_response();
+            auto  task  =
+                BlockTransferRequestConverter::decodeTransferTask(request.mem_request(), cache->groupSets(), reply);
+            if (task) {
+                BlockTransferRequestConverter::encodeTransferResult(reply, cache->executeTransfer(std::move(*task)));
+            }
+            return true;
+        }
+        default:
+            RTP_LLM_LOG_WARNING("unsupported cache RPC request type");
+            return false;
     }
-    return transfer_dispatcher_->queryLocalCompletion(trace_id);
 }
 
 TransferResult BlockTreeCache::executeTransfer(TransferTask task) {
@@ -245,19 +271,6 @@ CacheStats BlockTreeCache::getStats() const {
 std::vector<CachePoolMetrics> BlockTreeCache::poolMetrics() const {
     CacheLockGuard lock(mutex_, *metrics_reporter_, "other");
     return metrics_reporter_->collectPoolMetrics(tree_->groupSets());
-}
-
-void BlockTreeCache::cleanupExpiredMissing() const {
-    if (transfer_dispatcher_)
-        transfer_dispatcher_->cleanupExpiredMissing();
-}
-
-void BlockTreeCache::reportUnfreezeMetrics(const FrozenTask::ExecutionInfo& execution, bool forced) const {
-    metrics_reporter_->reportUnfreezeMetrics(execution, forced);
-}
-
-void BlockTreeCache::reportUnfreezeZeroMetrics(const std::vector<CachePoolMetrics>& pools) const {
-    metrics_reporter_->reportUnfreezeZeroMetrics(pools);
 }
 
 void BlockTreeCache::reportMetrics() const {

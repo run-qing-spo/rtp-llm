@@ -7,6 +7,7 @@ from timeout_recovery_checks import (
     check_timeout_recovery,
     d2h_timeout_records,
     frozen_host_metric_samples,
+    recovery_pool_samples,
 )
 
 
@@ -46,6 +47,34 @@ def record(trace=42, execution="transfer", released=False, **changes):
 
 
 class TimeoutRecoveryChecksTest(unittest.TestCase):
+    def test_reclaimer_requires_positive_release_and_fresh_empty_pools(self):
+        gauges = (
+            "rtp_llm_kv_cache_frozen_ref_blocks 100 2_2_2_2_1 pool_name=h tier=HOST\n"
+            "rtp_llm_kv_cache_frozen_ref_blocks 103 0_0_0_0_1 pool_name=h tier=HOST\n"
+        )
+        qps = "rtp_llm_kv_cache_unfreeze_blocks_qps 101 {} pool_name=h tier=HOST backend={} forced={}\n"
+        text = gauges + qps.format(0, "local", "false") + qps.format(1, "kvcm", "false")
+        self.assertEqual(recovery_pool_samples(text, backend="local", after_ms=102)["recovered"], [])
+        text += qps.format(1, "local", "false") + qps.format(2, "local", "true")
+        report = recovery_pool_samples(text, backend="local", after_ms=102)
+        self.assertEqual(report["recovered"], [("HOST", "h")])
+        self.assertEqual(report["forced"], [("HOST", "h")])
+        self.assertTrue(report["settled"])
+        self.assertFalse(recovery_pool_samples(text, backend="local", after_ms=104)["settled"])
+        text += "rtp_llm_kv_cache_frozen_ref_blocks 103 1_1_1_1_1 pool_name=h tier=HOST\n"
+        self.assertFalse(recovery_pool_samples(text, backend="local", after_ms=102)["settled"])
+
+    def test_d2h_requires_a_transfer_rpc_deadline(self):
+        text = ("block transfer failed: descriptor_count=1, error_type=RPC_FAILED, error_code=1, "
+                "details=multi-rank transfer RPC failed: broadcast rpc timeout, timeout_ms=1 "
+                "rank=1 err=4(Deadline Exceeded) addr=localhost:99 request_id=2 direction=D2H")
+        def evidence(line):
+            return analyze_timeout_recovery(line, backend="local")["evidence"]
+
+        self.assertIn("local_d2h_rpc_timeout", evidence(text))
+        self.assertNotIn("local_d2h_rpc_timeout", evidence(text.replace("direction=D2H", "direction=H2D")))
+        self.assertNotIn("local_d2h_rpc_timeout", evidence(text.replace("err=4", "err=1")))
+
     def test_real_trace_pair_with_nested_fields_and_duplicate_logs(self):
         text = record() * 2 + record(released=True) * 2
         report = check_timeout_recovery(text, backend="local", require_frozen=True)

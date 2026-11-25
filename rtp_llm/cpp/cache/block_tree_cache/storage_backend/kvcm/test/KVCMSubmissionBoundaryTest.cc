@@ -188,6 +188,7 @@ protected:
             runtime.model_name = "boundary_test";
             backend = std::make_unique<MockQuiescentKVCMBackend>(env.cache_config, config, runtime, parallel,
                 SpeculativeExecutionConfig{}, std::move(broadcast), true, nullptr, client);
+            backend->setReclaimer(std::make_shared<BlockTreeReclaimer>());
             EXPECT_TRUE(initSingleRank(*backend, env));
         }
         ~Fixture() { if (backend) { backend->proveMockQuiescence(); backend->shutdown(); } }
@@ -484,11 +485,11 @@ TEST_F(KVCMSubmissionBoundaryTest, ProjectedOneCompletedPeerAndOnePreflightExpir
 TEST_F(KVCMSubmissionBoundaryTest, TargetProtectionPreservesExceptionalSdkUnknownType) {
     const auto failure = std::make_exception_ptr(StorageOperationPayloadExceptionUnknown(
         "exceptional SDK completion", StorageQuarantineReason::RPC_ERROR));
-    for (const auto protection : {StorageLocalTargetProtection::LEGACY,
-                                  StorageLocalTargetProtection::TARGETS_HELD,
-                                  StorageLocalTargetProtection::NO_LOCAL_TARGETS}) {
+    for (const auto protection : {StorageTargetProtection::FREEZE_REQUEST_BLOCKS,
+                                  StorageTargetProtection::PROTECTED_BY_BACKEND,
+                                  StorageTargetProtection::NO_LOCAL_TARGETS}) {
         try {
-            std::rethrow_exception(KVCMStorageBackend::Impl::withTargetProtection(failure, protection));
+            std::rethrow_exception(KVCMStorageBackend::Impl::copyFailureWithTargetProtection(failure, protection));
         } catch (const StorageOperationPayloadExceptionUnknown& error) {
             EXPECT_STREQ(error.what(), "exceptional SDK completion");
             EXPECT_EQ(error.reason(), StorageQuarantineReason::RPC_ERROR);
@@ -534,7 +535,7 @@ TEST_F(KVCMSubmissionBoundaryTest, PrefillReadNormalizesUnclassifiedPostHandoffF
         for (const bool touched : {false, true}) {
             try {
                 try { throw std::bad_alloc(); }
-                catch (...) { s.backend->impl_->rethrowReadPayloadFailure(touched, nullptr); }
+                catch (...) { s.backend->impl_->rethrowReadPayloadFailure(touched, {}); }
             } catch (const StorageOperationCompletionUnknown&) {
                 EXPECT_TRUE(touched);
             } catch (const StorageOperationBufferSafeFailure&) {
@@ -935,6 +936,7 @@ TEST_F(KVCMSubmissionBoundaryTest, IncompletePeerProofCannotCloseAStartedDecodeS
                 second->set_payload_buffer_safe(shape == 3);
                 second->set_transfer_status(shape == 3 ? REMOTE_TRANSFER_STATUS_EXCEPTION_UNKNOWN :
                                                        REMOTE_TRANSFER_STATUS_FAILED);
+                EXPECT_FALSE(KVCMStorageBackend::Impl::hasBufferSafetyProof(*second));
             }
             bool touched = true; // Same pessimistic initialization as production completion.
             try {

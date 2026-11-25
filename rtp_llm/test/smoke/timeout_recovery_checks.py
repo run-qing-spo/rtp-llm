@@ -11,6 +11,14 @@ import re
 
 
 _TIMEOUT_PATTERNS = {
+    "local_rpc_timeout": re.compile(
+        r"block transfer failed: .*multi-rank transfer RPC failed: broadcast rpc timeout, "
+        r"timeout_ms=\d+ rank=\d+ err=4\("
+    ),
+    "local_d2h_rpc_timeout": re.compile(
+        r"block transfer failed: .*multi-rank transfer RPC failed: broadcast rpc timeout, "
+        r"timeout_ms=\d+ rank=\d+ err=4\([^)]*\) addr=\S+ request_id=\S+ direction=D2H\b"
+    ),
     "local_business_queue": re.compile(
         r"(?:load|store) expired in business queue|store business queue timeout"
     ),
@@ -306,6 +314,48 @@ def d2h_timeout_records(report):
         and item.get("expected_rank_count") == 2
         and item["target_pools"]
     ]
+
+
+def recovery_pool_samples(text, *, backend, after_ms):
+    pool_series = {}
+    recovered = set()
+    forced = set()
+    pattern = re.compile(
+        r"\brtp_llm_kv_cache_(frozen_ref_blocks|unfreeze_blocks_qps)\s+"
+        r"(\d+)\s+(\S+)([^\r\n]*)"
+    )
+    for match in pattern.finditer(text):
+        name, timestamp, value, tag_text = match.groups()
+        tags = dict(re.findall(r"\b(\w+)=([^\s,]+)", tag_text))
+        tier, pool = tags.get("tier"), tags.get("pool_name")
+        if not pool or tier not in ("HOST", "DEVICE", "DISK"):
+            continue
+        key = (tier, pool)
+        timestamp = int(timestamp)
+        if name == "unfreeze_blocks_qps":
+            if tags.get("backend") == backend and float(value) > 0:
+                if tags.get("forced") == "false":
+                    recovered.add(key)
+                elif tags.get("forced") == "true":
+                    forced.add(key)
+            continue
+        fields = [float(part) for part in value.split("_")]
+        if len(fields) != 5 or not all(math.isfinite(x) for x in fields) or fields[4] <= 0:
+            raise ValueError("invalid frozen-block gauge")
+        previous = pool_series.get(key)
+        if previous is None or timestamp > previous[0]:
+            pool_series[key] = (timestamp, fields[2])
+        elif timestamp == previous[0]:
+            pool_series[key] = (timestamp, max(previous[1], fields[2]))
+    settled = {
+        key for key, (timestamp, maximum) in pool_series.items()
+        if timestamp >= after_ms and maximum == 0
+    }
+    return {
+        "recovered": sorted(recovered),
+        "forced": sorted(forced),
+        "settled": bool(pool_series) and (pool_series.keys() | recovered) <= settled,
+    }
 
 
 def frozen_host_metric_samples(text, *, after_ms):
