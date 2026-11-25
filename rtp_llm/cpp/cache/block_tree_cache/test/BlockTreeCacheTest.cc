@@ -817,7 +817,9 @@ TEST(BlockTreeCacheMetricsTest, ExternalOwnerSnapshotsAndMetricsUseExistingPoolT
     collector.remote_connector_ref_blocks = metrics_list.front().remote_connector_ref_blocks;
     collector.pd_connector_ref_blocks     = metrics_list.front().pd_connector_ref_blocks;
     ASSERT_TRUE((reporter->report<RtpLLMCachePoolMetrics, RtpLLMCachePoolMetricsCollector>(&tags, &collector)));
-    EXPECT_DOUBLE_EQ(snapshotQps(metrics->request_ref_blocks_metric, tags, "rtp_llm_kv_cache_request_ref_blocks"), 1);
+    const auto serving_tags = kmonTagsWithServiceStatus(&tags);
+    EXPECT_DOUBLE_EQ(
+        snapshotQps(metrics->request_ref_blocks_metric, serving_tags, "rtp_llm_kv_cache_request_ref_blocks"), 1);
     EXPECT_DOUBLE_EQ(
         snapshotQps(metrics->remote_connector_ref_blocks_metric, tags, "rtp_llm_kv_cache_remote_connector_ref_blocks"),
         2);
@@ -831,7 +833,7 @@ TEST(BlockTreeCacheMetricsTest, ExternalOwnerSnapshotsAndMetricsUseExistingPoolT
     collector.remote_connector_ref_blocks = 0;
     collector.pd_connector_ref_blocks     = 0;
     ASSERT_TRUE((reporter->report<RtpLLMCachePoolMetrics, RtpLLMCachePoolMetricsCollector>(&tags, &collector)));
-    EXPECT_DOUBLE_EQ(snapshotQps(metrics->request_ref_blocks_metric, tags), 0);
+    EXPECT_DOUBLE_EQ(snapshotQps(metrics->request_ref_blocks_metric, serving_tags), 0);
     EXPECT_DOUBLE_EQ(snapshotQps(metrics->remote_connector_ref_blocks_metric, tags), 0);
     EXPECT_DOUBLE_EQ(snapshotQps(metrics->pd_connector_ref_blocks_metric, tags), 0);
     EXPECT_EQ(pool->freeBlocksNum(), pool->totalBlocksNum());
