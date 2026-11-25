@@ -477,8 +477,9 @@ std::unique_ptr<BlockTreeCache> makeBlockTreeCacheForTest(std::vector<GroupSetPt
                                                           BlockTreeCacheConfig                       config,
                                                           std::shared_ptr<StorageBackend>            storage_backend,
                                                           std::shared_ptr<BroadcastManager>          broadcast_manager,
-                                                          std::shared_ptr<kmonitor::MetricsReporter> metrics_reporter) {
-    group_sets                       = workLoopTestGroups(std::move(group_sets));
+                                                          std::shared_ptr<kmonitor::MetricsReporter> metrics_reporter,
+                                                          RecoveryTestOptions                        recovery) {
+    group_sets = workLoopTestGroups(std::move(group_sets));
     config.btc_transfer_engine_async = true;
     if (config.disk_cache_evict_max_pending_bytes == 0) {
         config.disk_cache_evict_max_pending_bytes = KVCacheConfig{}.disk_cache_evict_max_pending_bytes;
@@ -514,6 +515,8 @@ std::unique_ptr<BlockTreeCache> makeBlockTreeCacheForTest(std::vector<GroupSetPt
     }
     auto cache_metrics_reporter = std::make_shared<BlockTreeCacheMetricsReporter>(std::move(metrics_reporter));
     auto reclaimer = std::make_shared<BlockTreeReclaimer>(cache_metrics_reporter);
+    reclaimer->configure(
+        recovery.rank, recovery.interval_ms, recovery.query_timeout_ms, recovery.force_release_timeout_ms, broadcast_manager);
     const bool async =
         config.btc_transfer_engine_async && std::all_of(group_sets.begin(), group_sets.end(), [](const auto& group) {
             return group->devicePools().empty() || (!group->hostPool() && !group->diskPool()) || group->crcEnabled();
@@ -526,7 +529,7 @@ std::unique_ptr<BlockTreeCache> makeBlockTreeCacheForTest(std::vector<GroupSetPt
                                                                         config.transfer_worker_count,
                                                                         config.transfer_queue_max_size,
                                                                         cache_metrics_reporter,
-                                                                        0,
+                                                                        recovery.rank,
                                                                         config.btc_crc_slot_count,
                                                                         async);
     std::shared_ptr<MultiRankBlockTransferEngine> multi_rank_engine;
