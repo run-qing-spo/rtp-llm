@@ -745,7 +745,7 @@ bool RtpLLMCachePoolMetrics::init(kmonitor::MetricsGroupManager* manager) {
 }
 
 void RtpLLMCachePoolMetrics::report(const kmonitor::MetricsTags* tags, RtpLLMCacheUnfreezeMetricsCollector* collector) {
-    unfreeze_blocks_qps_metric->Report(tags, collector->blocks);
+    reportKmonMetric(unfreeze_blocks_qps_metric, tags, collector->blocks);
 }
 
 void RtpLLMCachePoolMetrics::report(const kmonitor::MetricsTags* tags, RtpLLMCachePoolMetricsCollector* collector) {

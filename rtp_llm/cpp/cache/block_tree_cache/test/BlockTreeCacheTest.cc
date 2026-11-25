@@ -646,7 +646,7 @@ TEST(BlockTreeCacheMetricsTest, UnfreezeMetricsCountUniqueTargetsPerPoolAndBacke
         tags.AddTag("backend", backend);
         tags.AddTag("forced", forced ? "true" : "false");
         return snapshotQps(reporter->getMetricsGroup<RtpLLMCachePoolMetrics>()->unfreeze_blocks_qps_metric,
-                           tags, "rtp_llm_kv_cache_unfreeze_blocks_qps");
+                           kmonTagsWithServiceStatus(&tags), "rtp_llm_kv_cache_unfreeze_blocks_qps");
     };
     auto first_config = std::make_shared<HostBlockPoolConfig>();
     first_config->pool_name = "first";
