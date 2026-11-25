@@ -41,7 +41,7 @@ private:
 struct BlockTransferDispatcher::TargetBlockSafetyHandler {
     TargetBlockSafetyHandler(std::shared_ptr<BlockTreeReclaimer> reclaimer,
                              TransferCompletionKey key,
-                             TransferDoneCallback done):
+                         TransferDoneCallback           done):
         reclaimer(std::move(reclaimer)), key(std::move(key)), done(std::move(done)) {}
 
     void complete(TransferResult result) {
@@ -51,14 +51,30 @@ struct BlockTransferDispatcher::TargetBlockSafetyHandler {
             reclaimer->freezeTargetBlocksWithTraceIDAndStillIOWorkerID(key, result.still_io_worker_ids);
         else
             reclaimer->unregisterTask(key);
-        auto notify = std::move(done);
-        notify(std::move(result));
+        auto       notify  = std::move(done);
+        const bool unknown = result.status.code() == ErrorCode::TRANSFER_COMPLETION_UNKNOWN;
+        try {
+            notify(std::move(result));
+        } catch (...) {
+            if (unknown) {
+                std::fputs("unknown transfer business completion could not be delivered safely\n", stderr);
+                std::fflush(stderr);
+                std::abort();
+            }
+            {
+                std::lock_guard<std::mutex> lock(consumer_exception_mutex);
+                consumer_exception = std::current_exception();
+            }
+            throw;
+        }
     }
 
     std::shared_ptr<BlockTreeReclaimer> reclaimer;
     TransferCompletionKey key;
-    TransferDoneCallback done;
-    std::atomic<bool> claimed{false};
+    TransferDoneCallback                   done;
+    std::atomic<bool>                      claimed{false};
+    std::mutex                             consumer_exception_mutex;
+    std::exception_ptr                     consumer_exception;
 };
 
 std::shared_ptr<BlockTransferDispatcher::InflightTicket> BlockTransferDispatcher::trackTransfer() const {
@@ -99,8 +115,8 @@ std::shared_ptr<TransferAsyncContext> BlockTransferDispatcher::executePerRank(Tr
                       trace_id.c_str(), task.requestId().value_or(-1));
     // Allocate the owner and its completion path before registering execution.
     // The safety callback owns the registry, not the dispatcher's business lifetime.
-    const auto ticket = trackTransfer();
-    auto context = std::make_shared<TransferBatchAsyncContext>(task.descriptors().size());
+    const auto ticket  = trackTransfer();
+    auto       context = std::make_shared<TransferBatchAsyncContext>(task.descriptors().size());
     auto safety = std::make_shared<TransferBufferSafetyTracker>([registry = reclaimer_, trace_id] {
         registry->ioFinishedOnWorkerWithTraceID(trace_id);
     });
@@ -111,15 +127,15 @@ std::shared_ptr<TransferAsyncContext> BlockTransferDispatcher::executePerRank(Tr
                               CacheCopyError::NOT_EXECUTED);
         // This input never reaches I/O. Do not finish or overwrite the existing trace.
         result.buffer_safe = true;
-        return std::make_shared<CompletedTransferAsyncContext>(
-            std::move(result), task.descriptors().size());
+        return std::make_shared<CompletedTransferAsyncContext>(std::move(result), task.descriptors().size());
     }
     block_tree_cache_detail::ScopeRollback close_submission([safety] {
         safety->finishSubmitting();
     });
     if (task.expired()) {
-        TransferResult result(ErrorInfo(ErrorCode::DEADLINE_EXCEEDED, "transfer deadline exceeded before TE submission"),
-                              CacheCopyError::NOT_EXECUTED);
+        TransferResult result(
+            ErrorInfo(ErrorCode::DEADLINE_EXCEEDED, "transfer deadline exceeded before TE submission"),
+            CacheCopyError::NOT_EXECUTED);
         result.buffer_safe = true;  // No batch was submitted.
         close_submission.run();
         context->complete(std::move(result));
@@ -143,8 +159,7 @@ std::shared_ptr<TransferAsyncContext> BlockTransferDispatcher::executePerRank(Tr
                     complete(child->result());
                     return context;
                 }
-            } catch (...) {
-            }
+            } catch (...) {}
             complete(std::move(observation_failure));
         }
     }
@@ -161,28 +176,28 @@ BlockTransferDispatcher::executeMultiRank(TransferTask task, const char* complet
 
 std::vector<TransferTargetBlock> BlockTransferDispatcher::resolveTargetBlockRefs(const TransferTask& task) const {
     std::vector<TransferTargetBlock> targets;
-    const auto& groups = multi_rank_engine_ ? multi_rank_engine_->groupSets() : per_rank_engine_->groupSets();
+    const auto& groups       = multi_rank_engine_ ? multi_rank_engine_->groupSets() : per_rank_engine_->groupSets();
     for (const auto& descriptor : task.descriptors()) {
         const GroupSet* group = descriptor.group_set_id < groups.size() ? groups[descriptor.group_set_id].get() : nullptr;
         for (size_t member = 0; member < descriptor.target_blocks.size(); ++member) {
-            std::shared_ptr<IBlockPool> pool;
-            if (group) {
+                std::shared_ptr<IBlockPool> pool;
+                if (group) {
                 if (descriptor.target_tier == Tier::DEVICE && member < group->devicePools().size())
-                    pool = group->devicePools()[member];
+                        pool = group->devicePools()[member];
                 else if (descriptor.target_tier == Tier::HOST)
-                    pool = group->hostPool();
+                        pool = group->hostPool();
                 else if (descriptor.target_tier == Tier::DISK)
-                    pool = group->diskPool();
-            }
+                        pool = group->diskPool();
+                }
             targets.push_back({std::move(pool), descriptor.target_blocks[member]});
-        }
+            }
     }
     return targets;
 }
 
 void BlockTransferDispatcher::registerTargetsAndSubmitTransfer(TransferTask task,
-                                                               TransferDoneCallback done,
-                                                               const char* completion_operation) const {
+                                                TransferDoneCallback done,
+                                                const char*          completion_operation) const {
     auto safety_handler = std::make_shared<TargetBlockSafetyHandler>(reclaimer_, task.traceId(), std::move(done));
     // Construct the subscription before starting any I/O. The child's callback
     // vector may still reject it; that path also passes through this finalizer.
@@ -208,8 +223,11 @@ void BlockTransferDispatcher::registerTargetsAndSubmitTransfer(TransferTask task
         }
         context->onDone(std::move(complete));
     } catch (...) {
-        if (safety_handler->claimed.load(std::memory_order_acquire))
-            throw; // Preserve exceptions from an inline business completion callback.
+        {
+            std::lock_guard<std::mutex> lock(safety_handler->consumer_exception_mutex);
+            if (safety_handler->consumer_exception == std::current_exception())
+                throw;
+        }
         if (!context) {
             reclaimer_->unregisterTask(safety_handler->key);
             throw;
@@ -223,7 +241,7 @@ void BlockTransferDispatcher::registerTargetsAndSubmitTransfer(TransferTask task
             // A failed observation cannot prove a submitted execution safe.
         }
         safety_handler->complete(std::move(result));
-    }
+        }
 }
 
 void BlockTransferDispatcher::runTransfer(TransferTask         task,
@@ -232,13 +250,17 @@ void BlockTransferDispatcher::runTransfer(TransferTask         task,
     // Keep a local owner even if the final callback completes synchronously.
     const auto ticket = trackTransfer();
     callback = [ticket, block_count = task.descriptors().size(), done = std::move(callback)](TransferResult result) {
-        result.expandBlockErrors(block_count);
         if (!result.ok()) {
-            RTP_LLM_LOG_ERROR("block transfer failed: descriptor_count=%zu, error_type=%s, error_code=%d, details=%s",
-                              block_count,
-                              cacheCopyErrorName(result.copy_error),
-                              static_cast<int>(result.status.code()),
-                              result.status.ToString().c_str());
+            try {
+                RTP_LLM_LOG_ERROR(
+                    "block transfer failed: descriptor_count=%zu, error_type=%s, error_code=%d, details=%s",
+                    block_count,
+                    cacheCopyErrorName(result.copy_error),
+                    static_cast<int>(result.status.code()),
+                    result.status.ToString().c_str());
+            } catch (...) {
+                // Optional diagnostics cannot prevent mandatory business completion.
+            }
         }
         done(std::move(result));
     };
