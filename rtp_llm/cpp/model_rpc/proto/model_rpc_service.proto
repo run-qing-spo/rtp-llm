@@ -908,6 +908,7 @@ message ShutdownResponsePB {
     int64 deadline_unix_ms = 5;
 }
 
+// Query existing worker evidence without admitting, cancelling or replaying I/O.
 message TransferCompletionKeyPB {
     oneof trace {
         uint64 transfer_trace_id = 1;

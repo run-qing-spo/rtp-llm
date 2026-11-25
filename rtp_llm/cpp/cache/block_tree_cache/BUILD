@@ -276,6 +276,7 @@ cc_library(
         "//rtp_llm/models_py/bindings:crc_block_copy",
         "//rtp_llm/cpp/utils:async_profiling_scope",
         "//rtp_llm/models_py/bindings:no_block_copy_hdr",
+        "@boost//:exception-headers",
         "@havenask//aios/autil:thread",
     ] + torch_deps() + no_block_copy_link_deps() + select({
         "@//:using_cuda": [

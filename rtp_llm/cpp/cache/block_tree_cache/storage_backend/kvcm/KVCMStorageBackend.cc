@@ -66,6 +66,7 @@ namespace {
 
 using Clock = std::chrono::steady_clock;
 
+constexpr auto kMaxReadSafetyQueryDuration = std::chrono::seconds(1);
 constexpr std::array<const char*, 4> kQuarantineReasons{
     "sdk_timeout", "rpc_timeout", "rpc_error", "invalid_response"};
 
@@ -856,7 +857,7 @@ public:
             rethrowPayloadFailure(source_may_be_touched);
         } catch (const StorageOperationCompletionUnknown&) {
             if (!read_trace.empty() && !decode_publication_enabled_) {
-                reclaimer_->freezeTargetBlocksWithTraceIDAndStillIOWorkerID(read_trace, {}, {});
+                reclaimer_->freezeTargetBlocksWithTraceIDAndStillIOWorkerID(read_trace, {});
                 std::rethrow_exception(copyFailureWithTargetProtection(std::current_exception(),
                                                                       StorageTargetProtection::PROTECTED_BY_BACKEND));
             }
@@ -1402,7 +1403,7 @@ public:
         execution->trace_id = request.trace_id();
         execution->proof = std::make_shared<TransferBufferSafety>(
             [registry = reclaimer_, trace_id = execution->trace_id] { registry->ioFinishedOnWorkerWithTraceID(trace_id); });
-        if (kvcm::kSupportsReadRecoveryDiscard && kv_cache_config_.block_tree_frozen_recovery_interval_ms > 0 &&
+        if (kvcm::kSupportsReadRecoveryDiscard &&
             parallelism_config_.role_type != RoleType::DECODE &&
             std::all_of(request.uris().begin(), request.uris().end(),
                         [](const auto& uri) { return uri.compare(0, 7, "pace://") == 0; })) {
@@ -1410,15 +1411,12 @@ public:
         }
         BlockTreeReclaimer::QueryCallback query;
         const auto id = request.trace_id();
-        if (client_wrapper_ && parallelism_config_.role_type != RoleType::DECODE
-            && kv_cache_config_.block_tree_frozen_recovery_interval_ms > 0) {
-            query = [client = client_wrapper_, registry = std::weak_ptr<BlockTreeReclaimer>(reclaimer_),
-                     id, timeout = kv_cache_config_.block_tree_frozen_recovery_query_timeout_ms](Clock::time_point deadline) {
+        if (client_wrapper_ && parallelism_config_.role_type != RoleType::DECODE) {
+            query = [client = client_wrapper_, id](Clock::time_point deadline) {
                 const auto now = Clock::now();
-                deadline = std::min(deadline, now + std::chrono::milliseconds(timeout));
+                deadline = std::min(deadline, now + kMaxReadSafetyQueryDuration);
                 const auto deadline_ms = std::chrono::duration_cast<std::chrono::milliseconds>(deadline.time_since_epoch()).count();
-                if (auto owner = registry.lock(); owner && now < deadline && client->queryReadBufferSafety(id, deadline_ms))
-                    owner->ioFinishedOnWorkerWithTraceID(id);
+                return now < deadline && client->queryReadBufferSafety(id, deadline_ms);
             };
         }
         auto discard = [self = weak_from_this(), cancelled = execution->recovery_cancelled, id](bool forced) {
@@ -2612,7 +2610,7 @@ private:
         if (track_workers) {
             source_may_be_touched = !pending.empty();
             if (!pending.empty())
-                reclaimer_->freezeTargetBlocksWithTraceIDAndStillIOWorkerID(read_trace, {}, pending);
+                reclaimer_->freezeTargetBlocksWithTraceIDAndStillIOWorkerID(read_trace, pending);
         }
         if (!success) {
             // Preserve a known SDK exception on any acknowledged rank even if

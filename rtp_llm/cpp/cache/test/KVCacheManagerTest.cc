@@ -2626,9 +2626,10 @@ TEST_F(KVCacheManagerTest, ForgetProgressesWithRecoveryDisabledAndWhileItsWorker
     ASSERT_TRUE(reclaimer.registerOnWorkerTaskWithTraceID("1003", [&](auto) {
         entered.set_value();
         released.wait_for(std::chrono::seconds(5));
+        return false;
     }));
     ASSERT_TRUE(reclaimer.registerTask(1003, {false, 1}, {}));
-    reclaimer.freezeTargetBlocksWithTraceIDAndStillIOWorkerID(1003, {}, {0});
+    reclaimer.freezeTargetBlocksWithTraceIDAndStillIOWorkerID(1003, {0});
     reclaimer.configure(0, 1000, 1000, 0, nullptr);
     ASSERT_TRUE(reclaimer.start());
     block_tree_cache_detail::ScopeRollback stop([&] {
